@@ -223,7 +223,9 @@ impl Netlink {
         let vtep_ip = net.network(); // x.x.x.0
         let mac = parse_mac(&peer.vtep_mac)?;
 
-        // Remove route to peer CIDR via dev (match by destination prefix).
+        // Remove route to peer CIDR via dev. Match both the destination prefix
+        // AND the output interface, so a same-prefix route on another device is
+        // never deleted by mistake.
         let mut routes = self.handle.route().get(rtnetlink::IpVersion::V4).execute();
         while let Some(route) = routes.try_next().await? {
             if route.header.destination_prefix_length != net.prefix() {
@@ -232,7 +234,10 @@ impl Netlink {
             let matches_dest = route.attributes.iter().any(|attr| {
                 matches!(attr, RouteAttribute::Destination(RouteAddress::Inet(addr)) if *addr == vtep_ip)
             });
-            if matches_dest {
+            let matches_dev = route.attributes.iter().any(|attr| {
+                matches!(attr, RouteAttribute::Oif(oif) if *oif == dev)
+            });
+            if matches_dest && matches_dev {
                 let _ = self.handle.route().del(route).execute().await;
                 break;
             }
