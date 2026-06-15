@@ -164,11 +164,13 @@ impl Netlink {
     }
 
     pub async fn del_peer(&self, dev: u32, peer: &Peer) -> Result<()> {
+        use netlink_packet_route::AddressFamily;
         use netlink_packet_route::route::{RouteAddress, RouteAttribute};
         use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute};
 
         let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
         let vtep_ip = net.network(); // x.x.x.0
+        let mac = parse_mac(&peer.vtep_mac)?;
 
         // Remove route to peer CIDR via dev (match by destination prefix).
         let mut routes = self.handle.route().get(rtnetlink::IpVersion::V4).execute();
@@ -195,6 +197,26 @@ impl Netlink {
                 matches!(attr, NeighbourAttribute::Destination(NeighbourAddress::Inet(addr)) if *addr == vtep_ip)
             });
             if matches_ip {
+                let _ = self.handle.neighbours().del(neigh).execute().await;
+                break;
+            }
+        }
+
+        // Remove the fdb entry (peer flannel.1 MAC -> peer underlay IP) installed
+        // by add_peer_l2 via add_bridge. rtnetlink 0.14 has no `del_bridge`, so we
+        // dump bridge-family (AF_BRIDGE) neighbours and match the one whose
+        // LinkLocalAddress (MAC) equals the peer VtepMAC on this dev, then delete
+        // it best-effort. Without this a PERMANENT fdb entry leaks on the
+        // `nolearning` flannel.1 device on peer removal / VtepMAC change.
+        let mut fdb = self.handle.neighbours().get().execute();
+        while let Ok(Some(neigh)) = fdb.try_next().await {
+            if neigh.header.family != AddressFamily::Bridge || neigh.header.ifindex != dev {
+                continue;
+            }
+            let matches_mac = neigh.attributes.iter().any(|attr| {
+                matches!(attr, NeighbourAttribute::LinkLocalAddress(lla) if lla.as_slice() == mac)
+            });
+            if matches_mac {
                 let _ = self.handle.neighbours().del(neigh).execute().await;
                 break;
             }

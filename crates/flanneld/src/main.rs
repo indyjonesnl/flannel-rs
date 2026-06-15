@@ -57,20 +57,32 @@ async fn main() -> Result<()> {
     loop {
         match mgr.desired_peers().await {
             Ok(desired) => {
+                let mut next = installed.clone();
                 for action in reconcile(&installed, &desired) {
                     match action {
                         Action::Add(p) => {
-                            if let Err(e) = nl.add_route(dev_idx, &p).await { warn!(?e, "add_route"); }
-                            if let Err(e) = nl.add_peer_l2(dev_idx, &p).await { warn!(?e, "add_peer_l2"); }
-                            info!(node = %p.node, cidr = %p.pod_cidr, "peer added");
+                            let r1 = nl.add_route(dev_idx, &p).await;
+                            let r2 = nl.add_peer_l2(dev_idx, &p).await;
+                            match (r1, r2) {
+                                (Ok(()), Ok(())) => {
+                                    info!(node = %p.node, cidr = %p.pod_cidr, "peer added");
+                                    next.insert(p.node.clone(), p);
+                                }
+                                (a, b) => {
+                                    if let Err(e) = a { warn!(?e, node = %p.node, "add_route failed; will retry"); }
+                                    if let Err(e) = b { warn!(?e, node = %p.node, "add_peer_l2 failed; will retry"); }
+                                    next.remove(&p.node); // ensure it's re-attempted next tick
+                                }
+                            }
                         }
                         Action::Remove(p) => {
-                            if let Err(e) = nl.del_peer(dev_idx, &p).await { warn!(?e, "del_peer"); }
+                            if let Err(e) = nl.del_peer(dev_idx, &p).await { warn!(?e, node = %p.node, "del_peer"); }
+                            next.remove(&p.node);
                             info!(node = %p.node, "peer removed");
                         }
                     }
                 }
-                installed = desired;
+                installed = next;
             }
             Err(e) => warn!(?e, "list peers failed; will retry"),
         }

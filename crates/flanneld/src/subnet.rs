@@ -17,7 +17,7 @@ impl SubnetEnv {
 
 /// VXLAN overhead is 50 bytes.
 pub fn vxlan_mtu(link_mtu: u32) -> u32 {
-    link_mtu - 50
+    link_mtu.saturating_sub(50)
 }
 
 #[cfg(test)]
@@ -41,5 +41,10 @@ mod tests {
     #[test]
     fn vxlan_mtu_subtracts_overhead() {
         assert_eq!(vxlan_mtu(1500), 1450);
+    }
+
+    #[test]
+    fn vxlan_mtu_saturates_without_underflow() {
+        assert_eq!(vxlan_mtu(40), 0);
     }
 }
