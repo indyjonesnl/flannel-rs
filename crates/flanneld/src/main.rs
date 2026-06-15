@@ -21,6 +21,7 @@ use crate::subnet::{SubnetEnv, vxlan_mtu};
 const DEV: &str = "flannel.1";
 const VNI: u32 = 1;
 const DSTPORT: u16 = 8472;
+const NET_CONF_PATH: &str = "/etc/kube-flannel/net-conf.json";
 
 /// Misconfiguration that no amount of retrying will fix. Surfacing these as a
 /// non-zero exit lets the DaemonSet crash-loop visibly instead of silently
@@ -57,8 +58,11 @@ fn classify_net_conf(raw: &str) -> Result<NetConf, Fatal> {
 /// errors (the caller retries); fatal misconfig is returned as a `Fatal` that
 /// downcasts so the caller can stop.
 async fn try_bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
-    // Fetch raw (transient on error), then classify (fatal on bad config).
-    let raw = mgr.net_conf_raw().await?;
+    // Read raw from the mounted ConfigMap file (transient on error), then
+    // classify (fatal on bad config).
+    let raw = tokio::fs::read_to_string(NET_CONF_PATH)
+        .await
+        .context("read /etc/kube-flannel/net-conf.json")?;
     let nc = classify_net_conf(&raw)?; // Fatal -> bails, downcasts in bootstrap()
 
     let own = mgr.own_node().await?; // node-not-found / no-PodCIDR -> transient
