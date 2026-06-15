@@ -45,5 +45,11 @@ kubectl --context "$CTX" apply -f "$ROOT/tests/smoke/workload.yaml"
 # so assert.sh's shorter rollout-status timeouts don't race the first pull.
 kubectl --context "$CTX" rollout status deploy/smoke-server --timeout=240s
 kubectl --context "$CTX" rollout status deploy/smoke-client --timeout=240s
+# Assert 4 resolves a Service name via CoreDNS. CoreDNS only becomes Ready once
+# the pod network is up, which lags the flannel rollout; without waiting, the
+# in-pod resolver can time out on its first query and the assert flakes. This is
+# variant-agnostic (applies to flannel-go and flannel-rs identically), like the
+# image-pull buffer above.
+kubectl --context "$CTX" -n kube-system rollout status deploy/coredns --timeout=180s
 bash "$ROOT/tests/smoke/assert.sh"
 echo "SMOKE PASSED: $VARIANT"

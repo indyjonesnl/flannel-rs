@@ -102,14 +102,25 @@ impl Netlink {
     }
 
     pub async fn add_route(&self, dev: u32, peer: &Peer) -> Result<()> {
+        use netlink_packet_route::route::RouteFlag;
+
         let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
-        let r = self
+        // Route the peer's pod CIDR via the peer's VTEP IP (x.x.x.0) with the
+        // ONLINK flag, matching upstream flannel. Without a gateway the route is
+        // a connected route and the kernel ARPs for the individual destination
+        // pod IP on flannel.1 (nolearning) -> resolution FAILS. Routing via the
+        // VTEP IP makes the kernel resolve the gateway, which has a PERMANENT
+        // neigh entry -> the inner frame gets the peer's flannel.1 MAC -> the
+        // fdb maps that MAC to the peer's underlay IP -> packet is delivered.
+        let mut r = self
             .handle
             .route()
             .add()
             .v4()
             .destination_prefix(net.network(), net.prefix())
-            .output_interface(dev);
+            .output_interface(dev)
+            .gateway(net.network());
+        r.message_mut().header.flags.push(RouteFlag::Onlink);
         if let Err(rtnetlink::Error::NetlinkError(e)) = r.execute().await {
             if e.raw_code() != -17 {
                 anyhow::bail!("add route: {e:?}");
@@ -119,10 +130,14 @@ impl Netlink {
     }
 
     pub async fn add_peer_l2(&self, dev: u32, peer: &Peer) -> Result<()> {
+        use netlink_packet_route::neighbour::NeighbourFlag;
+
         let mac = parse_mac(&peer.vtep_mac)?;
         let cidr: Ipv4Network = peer.pod_cidr.parse()?;
         let vtep_ip = cidr.network();
         let public: Ipv4Addr = peer.public_ip.parse()?;
+        // neigh: peer overlay IP (x.x.x.0) -> peer flannel.1 MAC (resolves the
+        // inner-frame destination MAC for the peer's subnet route).
         self.handle
             .neighbours()
             .add(dev, vtep_ip.into())
@@ -130,13 +145,21 @@ impl Netlink {
             .execute()
             .await
             .ok();
-        self.handle
+        // fdb: peer flannel.1 MAC -> peer underlay (node) IP. This MUST carry
+        // NTF_SELF (NeighbourFlag::Own); without it the kernel refuses to add
+        // the entry on the vxlan device itself, so encapsulated frames have no
+        // underlay destination and cross-node traffic is silently dropped.
+        if let Err(e) = self
+            .handle
             .neighbours()
             .add_bridge(dev, &mac)
             .destination(public.into())
+            .flags(vec![NeighbourFlag::Own])
             .execute()
             .await
-            .ok();
+        {
+            tracing::warn!("add fdb entry for peer {} failed: {e:?}", peer.public_ip);
+        }
         Ok(())
     }
 
