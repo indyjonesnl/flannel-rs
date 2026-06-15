@@ -4,6 +4,7 @@ mod annotation;
 mod peer;
 mod netlink;
 mod kube_mgr;
+mod ipmasq;
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -35,6 +36,10 @@ enum Fatal {
 /// State assembled by a successful bootstrap that the reconcile loop needs.
 struct BootstrapState {
     dev_idx: u32,
+    /// FLANNEL_NETWORK: the cluster-wide pod CIDR.
+    network: String,
+    /// FLANNEL_SUBNET: this node's pod CIDR.
+    subnet: String,
 }
 
 /// Parse + validate net-conf.json. A parse failure or a non-vxlan backend are
@@ -86,7 +91,11 @@ async fn try_bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
         .context("write subnet.env")?; // transient FS error -> retry
     info!("wrote /run/flannel/subnet.env");
 
-    Ok(BootstrapState { dev_idx })
+    Ok(BootstrapState {
+        dev_idx,
+        network: nc.network.clone(),
+        subnet: own.pod_cidr.clone(),
+    })
 }
 
 /// Retry bootstrap with exponential backoff (1s..30s) for transient failures.
@@ -116,7 +125,28 @@ async fn main() -> Result<()> {
     let mgr = KubeMgr::new(node_name.clone()).await?;
     let nl = Netlink::new()?;
 
-    let BootstrapState { dev_idx } = bootstrap(&mgr, &nl).await?;
+    let BootstrapState { dev_idx, network, subnet } = bootstrap(&mgr, &nl).await?;
+
+    // subnet.env advertises FLANNEL_IPMASQ=true, so install the matching
+    // source-NAT rules. Detect the iptables backend kube-proxy uses once, then
+    // re-assert the rules on every reconcile tick so a flush (e.g. kube-proxy
+    // restart) self-heals.
+    let masq = match ipmasq::IpMasq::detect() {
+        Ok(m) => {
+            info!(backend = m.backend(), "ip-masq backend selected");
+            Some(m)
+        }
+        Err(e) => {
+            warn!(?e, "could not detect iptables backend; ip-masq rules not installed");
+            None
+        }
+    };
+    if let Some(m) = &masq {
+        match m.ensure(&network, &subnet) {
+            Ok(()) => info!(%network, %subnet, "ip-masq rules ensured"),
+            Err(e) => warn!(?e, "failed to install ip-masq rules; will retry"),
+        }
+    }
 
     let mut installed: HashMap<String, crate::peer::Peer> = HashMap::new();
     loop {
@@ -150,6 +180,12 @@ async fn main() -> Result<()> {
                 installed = next;
             }
             Err(e) => warn!(?e, "list peers failed; will retry"),
+        }
+        // Re-assert ip-masq rules each tick (idempotent: -C then -A only on miss).
+        if let Some(m) = &masq {
+            if let Err(e) = m.ensure(&network, &subnet) {
+                warn!(?e, "failed to re-assert ip-masq rules; will retry");
+            }
         }
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
