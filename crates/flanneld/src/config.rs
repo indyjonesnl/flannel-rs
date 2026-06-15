@@ -26,7 +26,8 @@ mod tests {
 
     #[test]
     fn parses_vxlan_net_conf() {
-        let nc = NetConf::parse(r#"{"Network":"10.244.0.0/16","Backend":{"Type":"vxlan"}}"#).unwrap();
+        let nc =
+            NetConf::parse(r#"{"Network":"10.244.0.0/16","Backend":{"Type":"vxlan"}}"#).unwrap();
         assert_eq!(nc.network, "10.244.0.0/16");
         assert_eq!(nc.backend.kind, "vxlan");
     }

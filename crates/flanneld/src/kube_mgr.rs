@@ -41,7 +41,10 @@ impl KubeMgr {
             .and_then(|a| a.iter().find(|x| x.type_ == "InternalIP"))
             .map(|x| x.address.clone())
             .context("node has no InternalIP")?;
-        Ok(OwnNode { pod_cidr, public_ip })
+        Ok(OwnNode {
+            pod_cidr,
+            public_ip,
+        })
     }
 
     /// Server-side-apply patch own Node annotations: backend-type=vxlan,
@@ -84,7 +87,10 @@ impl KubeMgr {
     /// with missing data are skipped.
     pub async fn desired_peers(&self) -> Result<HashMap<String, Peer>> {
         let nodes: Api<Node> = Api::all(self.client.clone());
-        let list = nodes.list(&Default::default()).await.context("list nodes")?;
+        let list = nodes
+            .list(&Default::default())
+            .await
+            .context("list nodes")?;
         let mut out = HashMap::new();
         for n in list {
             let name = n.metadata.name.clone().unwrap_or_default();

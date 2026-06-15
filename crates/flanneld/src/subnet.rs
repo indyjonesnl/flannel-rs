@@ -1,7 +1,7 @@
 /// Inputs needed to render /run/flannel/subnet.env.
 pub struct SubnetEnv {
-    pub network: String,   // cluster CIDR, e.g. 10.244.0.0/16
-    pub subnet: String,    // this node's lease, e.g. 10.244.1.0/24
+    pub network: String, // cluster CIDR, e.g. 10.244.0.0/16
+    pub subnet: String,  // this node's lease, e.g. 10.244.1.0/24
     pub mtu: u32,
     pub ipmasq: bool,
 }

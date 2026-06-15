@@ -1,22 +1,22 @@
-mod config;
-mod subnet;
 mod annotation;
-mod peer;
-mod netlink;
-mod kube_mgr;
+mod config;
 mod ipmasq;
+mod kube_mgr;
+mod netlink;
+mod peer;
+mod subnet;
 
+use crate::config::NetConf;
+use crate::kube_mgr::KubeMgr;
+use crate::netlink::Netlink;
+use crate::peer::{reconcile, Action};
+use crate::subnet::{vxlan_mtu, SubnetEnv};
+use anyhow::{Context, Result};
+use ipnetwork::Ipv4Network;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
-use anyhow::{Context, Result};
-use ipnetwork::Ipv4Network;
 use tracing::{info, warn};
-use crate::config::NetConf;
-use crate::netlink::Netlink;
-use crate::kube_mgr::KubeMgr;
-use crate::peer::{reconcile, Action};
-use crate::subnet::{SubnetEnv, vxlan_mtu};
 
 const DEV: &str = "flannel.1";
 const VNI: u32 = 1;
@@ -121,15 +121,21 @@ async fn bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info".into())).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
 
     let node_name = std::env::var("NODE_NAME").context("NODE_NAME env required")?;
     let mgr = KubeMgr::new(node_name.clone()).await?;
     let nl = Netlink::new()?;
 
-    let BootstrapState { dev_idx, network, subnet } = bootstrap(&mgr, &nl).await?;
+    let BootstrapState {
+        dev_idx,
+        network,
+        subnet,
+    } = bootstrap(&mgr, &nl).await?;
 
     // subnet.env advertises FLANNEL_IPMASQ=true, so install the matching
     // source-NAT rules. Detect the iptables backend kube-proxy uses once, then
@@ -141,7 +147,10 @@ async fn main() -> Result<()> {
             Some(m)
         }
         Err(e) => {
-            warn!(?e, "could not detect iptables backend; ip-masq rules not installed");
+            warn!(
+                ?e,
+                "could not detect iptables backend; ip-masq rules not installed"
+            );
             None
         }
     };
@@ -168,14 +177,20 @@ async fn main() -> Result<()> {
                                     next.insert(p.node.clone(), p);
                                 }
                                 (a, b) => {
-                                    if let Err(e) = a { warn!(?e, node = %p.node, "add_route failed; will retry"); }
-                                    if let Err(e) = b { warn!(?e, node = %p.node, "add_peer_l2 failed; will retry"); }
+                                    if let Err(e) = a {
+                                        warn!(?e, node = %p.node, "add_route failed; will retry");
+                                    }
+                                    if let Err(e) = b {
+                                        warn!(?e, node = %p.node, "add_peer_l2 failed; will retry");
+                                    }
                                     next.remove(&p.node); // ensure it's re-attempted next tick
                                 }
                             }
                         }
                         Action::Remove(p) => {
-                            if let Err(e) = nl.del_peer(dev_idx, &p).await { warn!(?e, node = %p.node, "del_peer"); }
+                            if let Err(e) = nl.del_peer(dev_idx, &p).await {
+                                warn!(?e, node = %p.node, "del_peer");
+                            }
                             next.remove(&p.node);
                             info!(node = %p.node, "peer removed");
                         }
