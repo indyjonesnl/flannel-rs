@@ -3,6 +3,25 @@ set -euo pipefail
 CTX="kind-flannel-rs"
 k() { kubectl --context "$CTX" "$@"; }
 
+# Retry a command until it succeeds or the window elapses. Network state
+# (routes, ARP/fdb, kube-proxy/CoreDNS programming) converges asynchronously and
+# is slower on contended CI runners; the assert must still ultimately succeed —
+# this only tolerates first-attempt races, it does not weaken what is verified.
+retry() {
+  local timeout="$1"; shift
+  local deadline=$((SECONDS + timeout))
+  local attempt=1
+  until "$@"; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "FAIL: \`$*\` did not succeed within ${timeout}s"
+      return 1
+    fi
+    echo "  (attempt $attempt failed; retrying...)"
+    attempt=$((attempt + 1))
+    sleep 3
+  done
+}
+
 echo "== wait for workloads =="
 k rollout status deploy/smoke-server --timeout=120s
 k rollout status deploy/smoke-client --timeout=120s
@@ -33,12 +52,12 @@ docker exec "$CLI_NODE" ip route | grep -q "$SRV_CIDR" \
 echo "OK: route + device present"
 
 echo "== assert 2: cross-node ping =="
-k exec "$CLI_POD" -- ping -c3 -W2 "$SRV_IP"
+retry 60 k exec "$CLI_POD" -- ping -c3 -W2 "$SRV_IP"
 
 echo "== assert 3: cross-node TCP/HTTP =="
-k exec "$CLI_POD" -- curl -sS --max-time 5 "http://$SRV_IP:80/hostname"
+retry 60 k exec "$CLI_POD" -- curl -sS --max-time 5 "http://$SRV_IP:80/hostname"
 
 echo "== assert 4: ClusterIP service =="
-k exec "$CLI_POD" -- curl -sS --max-time 5 "http://smoke-server:80/hostname"
+retry 90 k exec "$CLI_POD" -- curl -sS --max-time 5 "http://smoke-server:80/hostname"
 
 echo "ALL ASSERTS PASSED"
