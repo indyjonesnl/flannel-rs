@@ -4,7 +4,11 @@ name: flannel-rs
 networking:
   disableDefaultCNI: true
   podSubnet: "10.244.0.0/16"
+# Node image pinned for reproducibility (local + CI). Matches kind v0.31.0 default.
 nodes:
   - role: control-plane
+    image: kindest/node:v1.35.0
   - role: worker
+    image: kindest/node:v1.35.0
   - role: worker
+    image: kindest/node:v1.35.0
