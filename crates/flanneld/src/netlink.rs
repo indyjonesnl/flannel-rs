@@ -23,8 +23,12 @@ impl Netlink {
         dstport: u16,
         local: Ipv4Addr,
         gateway: Ipv4Addr,
+        mtu: u32,
     ) -> Result<(String, u32)> {
         if let Some(idx) = self.link_index(name).await? {
+            // Existing device: make sure the MTU matches the (possibly changed)
+            // underlay before bringing it up.
+            self.set_mtu(idx, mtu).await?;
             let mac = self.link_mac(idx).await?;
             self.bring_up(idx).await?;
             return Ok((mac, idx));
@@ -35,9 +39,56 @@ impl Netlink {
             .await?
             .context("vxlan link missing after create")?;
         self.add_address(idx, gateway).await.ok();
+        // The VxlanAddRequest builder in rtnetlink 0.14 has no .mtu(), so set
+        // the device MTU explicitly after create.
+        self.set_mtu(idx, mtu).await?;
         self.bring_up(idx).await?;
         let mac = self.link_mac(idx).await?;
         Ok((mac, idx))
+    }
+
+    /// MTU of the interface that has `ip` assigned. Used to size the overlay.
+    pub async fn link_mtu_by_ip(&self, ip: Ipv4Addr) -> Result<u32> {
+        use netlink_packet_route::address::AddressAttribute;
+        use netlink_packet_route::link::LinkAttribute;
+        use netlink_packet_route::AddressFamily;
+        use std::net::IpAddr;
+
+        let mut addrs = self.handle.address().get().execute();
+        let mut idx: Option<u32> = None;
+        while let Some(msg) = addrs.try_next().await? {
+            if msg.header.family != AddressFamily::Inet {
+                continue;
+            }
+            let matches = msg.attributes.iter().any(|attr| {
+                matches!(attr, AddressAttribute::Address(IpAddr::V4(a)) if *a == ip)
+            });
+            if matches {
+                idx = Some(msg.header.index);
+                break;
+            }
+        }
+        let idx = idx.with_context(|| format!("no interface owns address {ip}"))?;
+
+        let mut links = self.handle.link().get().match_index(idx).execute();
+        let link = links.try_next().await?.context("underlay link disappeared")?;
+        for attr in link.attributes {
+            if let LinkAttribute::Mtu(mtu) = attr {
+                return Ok(mtu);
+            }
+        }
+        anyhow::bail!("no MTU on underlay link {idx}")
+    }
+
+    async fn set_mtu(&self, index: u32, mtu: u32) -> Result<()> {
+        self.handle
+            .link()
+            .set(index)
+            .mtu(mtu)
+            .execute()
+            .await
+            .context("set link mtu")?;
+        Ok(())
     }
 
     async fn create_vxlan(
