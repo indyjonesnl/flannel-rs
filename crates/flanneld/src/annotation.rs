@@ -32,7 +32,9 @@ mod tests {
 
     #[test]
     fn roundtrips_backend_data() {
-        let b = BackendData { vtep_mac: "ae:11:22:33:44:55".into() };
+        let b = BackendData {
+            vtep_mac: "ae:11:22:33:44:55".into(),
+        };
         let j = b.to_json();
         assert_eq!(j, r#"{"VtepMAC":"ae:11:22:33:44:55"}"#);
         assert_eq!(BackendData::from_json(&j).unwrap(), b);

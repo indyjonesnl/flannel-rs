@@ -1,9 +1,9 @@
-use std::net::Ipv4Addr;
+use crate::peer::Peer;
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
 use ipnetwork::Ipv4Network;
-use rtnetlink::{Handle, new_connection};
-use crate::peer::Peer;
+use rtnetlink::{new_connection, Handle};
+use std::net::Ipv4Addr;
 
 pub struct Netlink {
     handle: Handle,
@@ -60,9 +60,10 @@ impl Netlink {
             if msg.header.family != AddressFamily::Inet {
                 continue;
             }
-            let matches = msg.attributes.iter().any(|attr| {
-                matches!(attr, AddressAttribute::Address(IpAddr::V4(a)) if *a == ip)
-            });
+            let matches = msg
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, AddressAttribute::Address(IpAddr::V4(a)) if *a == ip));
             if matches {
                 idx = Some(msg.header.index);
                 break;
@@ -71,7 +72,10 @@ impl Netlink {
         let idx = idx.with_context(|| format!("no interface owns address {ip}"))?;
 
         let mut links = self.handle.link().get().match_index(idx).execute();
-        let link = links.try_next().await?.context("underlay link disappeared")?;
+        let link = links
+            .try_next()
+            .await?
+            .context("underlay link disappeared")?;
         for attr in link.attributes {
             if let LinkAttribute::Mtu(mtu) = attr {
                 return Ok(mtu);
@@ -122,7 +126,12 @@ impl Netlink {
     }
 
     async fn link_index(&self, name: &str) -> Result<Option<u32>> {
-        let mut links = self.handle.link().get().match_name(name.to_string()).execute();
+        let mut links = self
+            .handle
+            .link()
+            .get()
+            .match_name(name.to_string())
+            .execute();
         match links.try_next().await {
             Ok(Some(l)) => Ok(Some(l.header.index)),
             Ok(None) => Ok(None),
@@ -215,9 +224,9 @@ impl Netlink {
     }
 
     pub async fn del_peer(&self, dev: u32, peer: &Peer) -> Result<()> {
-        use netlink_packet_route::AddressFamily;
-        use netlink_packet_route::route::{RouteAddress, RouteAttribute};
         use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute};
+        use netlink_packet_route::route::{RouteAddress, RouteAttribute};
+        use netlink_packet_route::AddressFamily;
 
         let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
         let vtep_ip = net.network(); // x.x.x.0
@@ -234,9 +243,10 @@ impl Netlink {
             let matches_dest = route.attributes.iter().any(|attr| {
                 matches!(attr, RouteAttribute::Destination(RouteAddress::Inet(addr)) if *addr == vtep_ip)
             });
-            let matches_dev = route.attributes.iter().any(|attr| {
-                matches!(attr, RouteAttribute::Oif(oif) if *oif == dev)
-            });
+            let matches_dev = route
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, RouteAttribute::Oif(oif) if *oif == dev));
             if matches_dest && matches_dev {
                 let _ = self.handle.route().del(route).execute().await;
                 break;

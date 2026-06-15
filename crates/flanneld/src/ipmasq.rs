@@ -43,7 +43,16 @@ fn masq_rules(n: &str, sn: &str) -> Vec<Vec<String>> {
         // pod -> pod: no masq
         s(&["-s", n, "-d", n, "-j", "RETURN"]),
         // pod -> external (non-multicast): masq
-        s(&["-s", n, "!", "-d", "224.0.0.0/4", "-j", "MASQUERADE", "--random-fully"]),
+        s(&[
+            "-s",
+            n,
+            "!",
+            "-d",
+            "224.0.0.0/4",
+            "-j",
+            "MASQUERADE",
+            "--random-fully",
+        ]),
         // !pod -> local pods: no masq
         s(&["!", "-s", n, "-d", sn, "-j", "RETURN"]),
         // !pod -> remote pods: masq
@@ -55,7 +64,11 @@ fn masq_rules(n: &str, sn: &str) -> Vec<Vec<String>> {
 /// `KUBE-` chains kube-proxy installs; their presence is the strongest signal the
 /// backend is active. Returns `(has_kube_chains, total_rule_lines)`.
 fn backend_signal(backend: &str) -> (bool, usize) {
-    let out = Command::new(backend).arg("-t").arg("nat").arg("-S").output();
+    let out = Command::new(backend)
+        .arg("-t")
+        .arg("nat")
+        .arg("-S")
+        .output();
     let Ok(out) = out else { return (false, 0) };
     if !out.status.success() {
         return (false, 0);
@@ -79,7 +92,10 @@ impl IpMasq {
     pub fn detect() -> Result<Self> {
         let (nft_kube, nft_rules) = backend_signal("iptables-nft");
         let (legacy_kube, legacy_rules) = backend_signal("iptables-legacy");
-        debug!(nft_kube, nft_rules, legacy_kube, legacy_rules, "iptables backend signals");
+        debug!(
+            nft_kube,
+            nft_rules, legacy_kube, legacy_rules, "iptables backend signals"
+        );
 
         let backend = match (nft_kube, legacy_kube) {
             (true, false) => "iptables-nft",
@@ -123,8 +139,11 @@ impl IpMasq {
             Err(e) => {
                 // Some old backends lack `--random-fully`. Retry without it.
                 if rule.iter().any(|a| a == "--random-fully") {
-                    let stripped: Vec<String> =
-                        rule.iter().filter(|a| *a != "--random-fully").cloned().collect();
+                    let stripped: Vec<String> = rule
+                        .iter()
+                        .filter(|a| *a != "--random-fully")
+                        .cloned()
+                        .collect();
                     if self.rule_exists(&stripped, "-C")? {
                         return Ok(());
                     }
@@ -145,7 +164,9 @@ impl IpMasq {
     }
 
     fn append(&self, rule: &[String]) -> Result<()> {
-        let out = self.run("-A", rule).with_context(|| format!("spawn {} -A", self.backend))?;
+        let out = self
+            .run("-A", rule)
+            .with_context(|| format!("spawn {} -A", self.backend))?;
         if out.status.success() {
             Ok(())
         } else {
@@ -184,7 +205,16 @@ mod tests {
         assert_eq!(rules[0], vec!["-s", n, "-d", n, "-j", "RETURN"]);
         assert_eq!(
             rules[1],
-            vec!["-s", n, "!", "-d", "224.0.0.0/4", "-j", "MASQUERADE", "--random-fully"]
+            vec![
+                "-s",
+                n,
+                "!",
+                "-d",
+                "224.0.0.0/4",
+                "-j",
+                "MASQUERADE",
+                "--random-fully"
+            ]
         );
         assert_eq!(rules[2], vec!["!", "-s", n, "-d", sn, "-j", "RETURN"]);
         assert_eq!(
