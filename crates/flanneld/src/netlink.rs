@@ -140,8 +140,42 @@ impl Netlink {
         Ok(())
     }
 
-    pub async fn del_peer(&self, _dev: u32, _peer: &Peer) -> Result<()> {
-        // Stub in this task; refined in a later task.
+    pub async fn del_peer(&self, dev: u32, peer: &Peer) -> Result<()> {
+        use netlink_packet_route::route::{RouteAddress, RouteAttribute};
+        use netlink_packet_route::neighbour::{NeighbourAddress, NeighbourAttribute};
+
+        let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
+        let vtep_ip = net.network(); // x.x.x.0
+
+        // Remove route to peer CIDR via dev (match by destination prefix).
+        let mut routes = self.handle.route().get(rtnetlink::IpVersion::V4).execute();
+        while let Some(route) = routes.try_next().await? {
+            if route.header.destination_prefix_length != net.prefix() {
+                continue;
+            }
+            let matches_dest = route.attributes.iter().any(|attr| {
+                matches!(attr, RouteAttribute::Destination(RouteAddress::Inet(addr)) if *addr == vtep_ip)
+            });
+            if matches_dest {
+                let _ = self.handle.route().del(route).execute().await;
+                break;
+            }
+        }
+
+        // Remove neigh (best-effort); entries otherwise age out.
+        let mut neighbours = self.handle.neighbours().get().execute();
+        while let Ok(Some(neigh)) = neighbours.try_next().await {
+            if neigh.header.ifindex != dev {
+                continue;
+            }
+            let matches_ip = neigh.attributes.iter().any(|attr| {
+                matches!(attr, NeighbourAttribute::Destination(NeighbourAddress::Inet(addr)) if *addr == vtep_ip)
+            });
+            if matches_ip {
+                let _ = self.handle.neighbours().del(neigh).execute().await;
+                break;
+            }
+        }
         Ok(())
     }
 }
