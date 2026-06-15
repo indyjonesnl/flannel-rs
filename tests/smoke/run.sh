@@ -31,20 +31,59 @@ install_cni_bridge() {
   echo "OK: CNI bridge/host-local installed on all nodes"
 }
 
+# Workload image — preloaded into the cluster so pods never wait on a registry
+# pull (slow/contended CI runners otherwise time out the rollout). Must match
+# tests/smoke/workload.yaml.
+AGNHOST="registry.k8s.io/e2e-test-images/agnhost:2.47"
+preload_workload_image() {
+  docker pull "$AGNHOST"
+  kind load docker-image "$AGNHOST" --name flannel-rs
+  echo "OK: preloaded $AGNHOST into cluster"
+}
+
+dump_diagnostics() {
+  echo "================ SMOKE DIAGNOSTICS ($VARIANT) ================"
+  kubectl --context "$CTX" get nodes -o wide || true
+  kubectl --context "$CTX" get pods -A -o wide || true
+  echo "--- recent events ---"
+  kubectl --context "$CTX" get events -A --sort-by=.lastTimestamp | tail -40 || true
+  echo "--- flannel daemonset logs ---"
+  kubectl --context "$CTX" -n kube-flannel logs ds/kube-flannel-ds --tail=80 --all-containers || true
+  echo "--- coredns logs ---"
+  kubectl --context "$CTX" -n kube-system logs -l k8s-app=kube-dns --tail=40 || true
+  echo "============================================================="
+}
+
 cleanup() { kind delete cluster --name flannel-rs >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+trap dump_diagnostics ERR
+
+# Same-node pod -> Service -> pod traffic is bridged and only hits iptables
+# (kube-proxy DNAT/masq) when bridge netfilter is enabled. Ensure it on each
+# node so in-cluster DNS works regardless of pod placement. Best-effort: the
+# module must be loaded on the host (CI loads it; dev machines usually have it).
+ensure_bridge_netfilter() {
+  for node in $(kind get nodes --name flannel-rs); do
+    docker exec "$node" sh -c \
+      'modprobe br_netfilter 2>/dev/null || true; \
+       sysctl -w net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true; \
+       sysctl -w net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true'
+  done
+  echo "OK: bridge-nf-call-iptables ensured on all nodes"
+}
 
 kind create cluster --config "$ROOT/deploy/kind-cluster.yaml"
 install_cni_bridge
+ensure_bridge_netfilter
+preload_workload_image
 [ "$VARIANT" = "flannel-rs" ] && kind load docker-image flannel-rs:dev --name flannel-rs
 kubectl --context "$CTX" apply -f "$MANIFEST"
 kubectl --context "$CTX" -n kube-flannel rollout status ds/kube-flannel-ds --timeout=180s
 kubectl --context "$CTX" wait --for=condition=Ready nodes --all --timeout=180s
 kubectl --context "$CTX" apply -f "$ROOT/tests/smoke/workload.yaml"
-# Give workloads room to pull images + start on a cold node before asserting,
-# so assert.sh's shorter rollout-status timeouts don't race the first pull.
-kubectl --context "$CTX" rollout status deploy/smoke-server --timeout=240s
-kubectl --context "$CTX" rollout status deploy/smoke-client --timeout=240s
+# Images are preloaded, so the rollout only waits on scheduling + start.
+kubectl --context "$CTX" rollout status deploy/smoke-server --timeout=300s
+kubectl --context "$CTX" rollout status deploy/smoke-client --timeout=300s
 # Assert 4 resolves a Service name via CoreDNS. CoreDNS only becomes Ready once
 # the pod network is up, which lags the flannel rollout; without waiting, the
 # in-pod resolver can time out on its first query and the assert flakes. This is
