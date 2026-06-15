@@ -61,6 +61,15 @@ jobs:
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
           kind version && kubectl version --client
 
+      # Same-node pod -> Service -> pod traffic is bridged and only traverses
+      # iptables (kube-proxy DNAT/masq) when br_netfilter is loaded. GH runners
+      # don't load it by default; without this, in-cluster DNS flakes whenever
+      # CoreDNS and the client land on the same node.
+      - name: Enable bridge netfilter
+        run: |
+          sudo modprobe br_netfilter
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+
       - name: Build flannel-rs image
         if: matrix.variant == 'flannel-rs'
         run: docker build -t flannel-rs:dev .

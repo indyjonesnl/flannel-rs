@@ -58,8 +58,23 @@ cleanup() { kind delete cluster --name flannel-rs >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 trap dump_diagnostics ERR
 
+# Same-node pod -> Service -> pod traffic is bridged and only hits iptables
+# (kube-proxy DNAT/masq) when bridge netfilter is enabled. Ensure it on each
+# node so in-cluster DNS works regardless of pod placement. Best-effort: the
+# module must be loaded on the host (CI loads it; dev machines usually have it).
+ensure_bridge_netfilter() {
+  for node in $(kind get nodes --name flannel-rs); do
+    docker exec "$node" sh -c \
+      'modprobe br_netfilter 2>/dev/null || true; \
+       sysctl -w net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true; \
+       sysctl -w net.bridge.bridge-nf-call-ip6tables=1 2>/dev/null || true'
+  done
+  echo "OK: bridge-nf-call-iptables ensured on all nodes"
+}
+
 kind create cluster --config "$ROOT/deploy/kind-cluster.yaml"
 install_cni_bridge
+ensure_bridge_netfilter
 preload_workload_image
 [ "$VARIANT" = "flannel-rs" ] && kind load docker-image flannel-rs:dev --name flannel-rs
 kubectl --context "$CTX" apply -f "$MANIFEST"
