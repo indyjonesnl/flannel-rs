@@ -27,17 +27,26 @@ impl KubeMgr {
     }
 
     /// Read ConfigMap kube-flannel/kube-flannel-cfg, parse net-conf.json.
+    /// Retained for API completeness; bootstrap uses `net_conf_raw` so it can
+    /// classify a parse error as fatal separately from a transient fetch error.
+    #[allow(dead_code)]
     pub async fn net_conf(&self) -> Result<NetConf> {
+        NetConf::parse(&self.net_conf_raw().await?)
+    }
+
+    /// Read the raw net-conf.json string from ConfigMap
+    /// kube-flannel/kube-flannel-cfg. Fetch failures are transient (apiserver
+    /// unreachable, configmap not yet created); parsing is the caller's job so
+    /// it can classify a parse error as fatal.
+    pub async fn net_conf_raw(&self) -> Result<String> {
         let cms: Api<ConfigMap> = Api::namespaced(self.client.clone(), "kube-flannel");
         let cm = cms
             .get("kube-flannel-cfg")
             .await
             .context("get flannel configmap")?;
         let mut data = cm.data.unwrap_or_default();
-        let raw = data
-            .remove("net-conf.json")
-            .context("net-conf.json missing")?;
-        NetConf::parse(&raw)
+        data.remove("net-conf.json")
+            .context("net-conf.json missing")
     }
 
     /// Get own Node: Spec.podCIDR + status InternalIP.
