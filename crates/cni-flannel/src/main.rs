@@ -18,13 +18,24 @@ fn read_stdin() -> String {
 
 /// Returns (delegate_type, delegate_json).
 fn delegate_json(stdin: &str) -> Result<(String, String), CniError> {
-    let conf = delegate::FlannelConf::parse(stdin)
-        .map_err(|e| CniError::new(6, "failed to decode network config").with_details(e.to_string()))?;
-    let env = subnetenv::SubnetEnv::load(SUBNET_ENV_PATH)
-        .map_err(|e| CniError::new(11, "failed to read /run/flannel/subnet.env (flanneld not ready?)").with_details(e))?;
+    let conf = delegate::FlannelConf::parse(stdin).map_err(|e| {
+        CniError::new(6, "failed to decode network config").with_details(e.to_string())
+    })?;
+    let env = subnetenv::SubnetEnv::load(SUBNET_ENV_PATH).map_err(|e| {
+        CniError::new(
+            11,
+            "failed to read /run/flannel/subnet.env (flanneld not ready?)",
+        )
+        .with_details(e)
+    })?;
     let d = delegate::build_delegate(&conf, &env);
-    let dtype = d.get("type").and_then(|t| t.as_str()).unwrap_or("bridge").to_string();
-    let json = serde_json::to_string(&d).map_err(|e| CniError::new(6, "encode delegate").with_details(e.to_string()))?;
+    let dtype = d
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("bridge")
+        .to_string();
+    let json = serde_json::to_string(&d)
+        .map_err(|e| CniError::new(6, "encode delegate").with_details(e.to_string()))?;
     Ok((dtype, json))
 }
 

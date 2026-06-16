@@ -13,9 +13,14 @@ pub struct DelegateOutput {
 
 /// Find `name` in CNI_PATH (colon-separated), exec it with the same CNI_* env and
 /// `stdin_json` piped to stdin. `Err` only for our own failures (not found / spawn).
-pub fn run_delegate(name: &str, args: &CniArgs, stdin_json: &str) -> Result<DelegateOutput, CniError> {
-    let bin = find_in_path(name, &args.path)
-        .ok_or_else(|| CniError::new(5, format!("delegate plugin {name:?} not found in CNI_PATH")))?;
+pub fn run_delegate(
+    name: &str,
+    args: &CniArgs,
+    stdin_json: &str,
+) -> Result<DelegateOutput, CniError> {
+    let bin = find_in_path(name, &args.path).ok_or_else(|| {
+        CniError::new(5, format!("delegate plugin {name:?} not found in CNI_PATH"))
+    })?;
     let mut child = Command::new(&bin)
         .env("CNI_COMMAND", &args.command)
         .env("CNI_CONTAINERID", &args.container_id)
@@ -27,7 +32,9 @@ pub fn run_delegate(name: &str, args: &CniArgs, stdin_json: &str) -> Result<Dele
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| CniError::new(5, format!("exec delegate {name} failed")).with_details(e.to_string()))?;
+        .map_err(|e| {
+            CniError::new(5, format!("exec delegate {name} failed")).with_details(e.to_string())
+        })?;
     child
         .stdin
         .take()
@@ -60,8 +67,15 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn args(path: &str) -> CniArgs {
-        let m: HashMap<String, String> = [("CNI_COMMAND", "ADD"), ("CNI_CONTAINERID", "cid1"), ("CNI_IFNAME", "eth0"), ("CNI_PATH", path)]
-            .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let m: HashMap<String, String> = [
+            ("CNI_COMMAND", "ADD"),
+            ("CNI_CONTAINERID", "cid1"),
+            ("CNI_IFNAME", "eth0"),
+            ("CNI_PATH", path),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
         CniArgs::from_map(&m).unwrap()
     }
 
@@ -89,7 +103,11 @@ mod tests {
     #[test]
     fn failing_delegate_reports_unsuccessful() {
         let tmp = tempfile::tempdir().unwrap();
-        write_script(tmp.path(), "bridge", "#!/bin/sh\necho '{\"code\":7,\"msg\":\"boom\"}'\nexit 1\n");
+        write_script(
+            tmp.path(),
+            "bridge",
+            "#!/bin/sh\necho '{\"code\":7,\"msg\":\"boom\"}'\nexit 1\n",
+        );
         let path = tmp.path().to_str().unwrap();
         let out = run_delegate("bridge", &args(path), "{}").unwrap();
         assert!(!out.success);
@@ -99,7 +117,8 @@ mod tests {
     #[test]
     fn missing_delegate_is_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = run_delegate("nonexistent", &args(tmp.path().to_str().unwrap()), "{}").unwrap_err();
+        let err =
+            run_delegate("nonexistent", &args(tmp.path().to_str().unwrap()), "{}").unwrap_err();
         assert_eq!(err.code, 5);
     }
 }

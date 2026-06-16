@@ -15,7 +15,9 @@ impl SubnetEnv {
             if line.is_empty() {
                 continue;
             }
-            let (k, v) = line.split_once('=').ok_or_else(|| format!("malformed line: {line}"))?;
+            let (k, v) = line
+                .split_once('=')
+                .ok_or_else(|| format!("malformed line: {line}"))?;
             match k.trim() {
                 "FLANNEL_NETWORK" => network = Some(v.trim().to_string()),
                 "FLANNEL_SUBNET" => subnet = Some(v.trim().to_string()),
@@ -46,7 +48,15 @@ mod tests {
     fn parses_well_formed_subnet_env() {
         let raw = "FLANNEL_NETWORK=10.244.0.0/16\nFLANNEL_SUBNET=10.244.1.0/24\nFLANNEL_MTU=1450\nFLANNEL_IPMASQ=true\n";
         let e = SubnetEnv::parse(raw).unwrap();
-        assert_eq!(e, SubnetEnv { network: "10.244.0.0/16".into(), subnet: "10.244.1.0/24".into(), mtu: 1450, ipmasq: true });
+        assert_eq!(
+            e,
+            SubnetEnv {
+                network: "10.244.0.0/16".into(),
+                subnet: "10.244.1.0/24".into(),
+                mtu: 1450,
+                ipmasq: true
+            }
+        );
     }
 
     #[test]

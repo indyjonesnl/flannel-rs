@@ -11,10 +11,26 @@ pub struct FlannelConf {
 impl FlannelConf {
     pub fn parse(s: &str) -> Result<Self, serde_json::Error> {
         let v: Value = serde_json::from_str(s)?;
-        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let cni_version = v.get("cniVersion").and_then(|x| x.as_str()).unwrap_or("0.3.1").to_string();
-        let delegate = v.get("delegate").and_then(|d| d.as_object()).cloned().unwrap_or_default();
-        Ok(Self { name, cni_version, delegate })
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let cni_version = v
+            .get("cniVersion")
+            .and_then(|x| x.as_str())
+            .unwrap_or("0.3.1")
+            .to_string();
+        let delegate = v
+            .get("delegate")
+            .and_then(|d| d.as_object())
+            .cloned()
+            .unwrap_or_default();
+        Ok(Self {
+            name,
+            cni_version,
+            delegate,
+        })
     }
 }
 
@@ -52,7 +68,12 @@ mod tests {
     use super::*;
 
     fn env() -> SubnetEnv {
-        SubnetEnv { network: "10.244.0.0/16".into(), subnet: "10.244.1.0/24".into(), mtu: 1450, ipmasq: true }
+        SubnetEnv {
+            network: "10.244.0.0/16".into(),
+            subnet: "10.244.1.0/24".into(),
+            mtu: 1450,
+            ipmasq: true,
+        }
     }
 
     #[test]
