@@ -76,6 +76,25 @@ fn run() -> Result<(String, bool), CniError> {
     }
 }
 
+fn main() -> ExitCode {
+    match run() {
+        Ok((out, success)) => {
+            if !out.is_empty() {
+                print!("{out}");
+            }
+            if success {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            print!("{}", e.to_json());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,24 +128,5 @@ mod tests {
     fn add_with_subnet_env_builds_ipam() {
         let (_dtype, json) = resolve_delegate(CONF, Some(env()), "ADD").unwrap();
         assert!(json.contains("10.244.1.0/24"));
-    }
-}
-
-fn main() -> ExitCode {
-    match run() {
-        Ok((out, success)) => {
-            if !out.is_empty() {
-                print!("{out}");
-            }
-            if success {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
-        Err(e) => {
-            print!("{}", e.to_json());
-            ExitCode::FAILURE
-        }
     }
 }
