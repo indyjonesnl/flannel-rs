@@ -2,6 +2,8 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct BridgeConf {
+    // Part of the netconf schema; parsed but not consumed by the dispatch.
+    #[allow(dead_code)]
     #[serde(rename = "cniVersion", default)]
     pub cni_version: String,
     #[serde(alias = "name", default = "default_bridge")]
