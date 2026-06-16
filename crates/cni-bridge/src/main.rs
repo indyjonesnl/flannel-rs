@@ -38,7 +38,29 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
         // relay IPAM error verbatim
         return Err(err(7, "ipam add failed").with_details(out.stdout));
     }
-    let ipam = CniResult::parse(&out.stdout)
+    // Everything after a successful IPAM ADD must release the allocation on
+    // failure, or retries leak IPs from the node /24. Wire the pod, and on any
+    // error run IPAM DEL before propagating (mirrors Go's deferred ipam.ExecDel).
+    match wire_pod(&h, bridge_idx, conf, args, &out.stdout).await {
+        Ok(()) => Ok(out.stdout), // 7. relay IPAM result for the chained portmap
+        Err(e) => {
+            ipam_del(conf, args, stdin);
+            Err(e)
+        }
+    }
+}
+
+/// Steps 3–6 of ADD: parse IPAM result, create+wire the veth, configure the
+/// container interface, set the bridge gateway. Tears down the veth on its own
+/// failures; the caller releases the IPAM allocation.
+async fn wire_pod(
+    h: &rtnetlink::Handle,
+    bridge_idx: u32,
+    conf: &BridgeConf,
+    args: &CniArgs,
+    ipam_stdout: &str,
+) -> Result<(), CniError> {
+    let ipam = CniResult::parse(ipam_stdout)
         .map_err(|e| err(6, "parse ipam result").with_details(e.to_string()))?;
     let ipplan =
         plan::ip_plan(&ipam).map_err(|e| err(7, "ipam plan").with_details(e.to_string()))?;
@@ -46,15 +68,15 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
     // 3. veth pair
     let host_veth = plan::host_veth_name(&args.container_id);
     let temp_cont = plan::temp_cont_name(&args.container_id);
-    let (host_idx, peer_idx) = hostns::create_veth(&h, &host_veth, &temp_cont, conf.mtu)
+    let (host_idx, peer_idx) = hostns::create_veth(h, &host_veth, &temp_cont, conf.mtu)
         .await
         .map_err(|e| err(5, "create veth").with_details(format!("{e:#}")))?;
 
     // 4. move container end into the netns, configure it
     let netns_fd =
         open_netns(&args.netns).map_err(|e| err(5, "open netns").with_details(e.to_string()))?;
-    if let Err(e) = hostns::move_to_netns(&h, peer_idx, netns_fd).await {
-        hostns::del_link(&h, host_idx).await;
+    if let Err(e) = hostns::move_to_netns(h, peer_idx, netns_fd).await {
+        hostns::del_link(h, host_idx).await;
         return Err(err(5, "move veth to netns").with_details(format!("{e:#}")));
     }
     if let Err(e) = contns::configure_container_iface(
@@ -64,13 +86,13 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
         ipplan,
         conf.is_default_gateway,
     ) {
-        hostns::del_link(&h, host_idx).await;
+        hostns::del_link(h, host_idx).await;
         return Err(err(7, "configure container iface").with_details(format!("{e:#}")));
     }
 
     // 5. attach host veth to bridge + hairpin
-    if let Err(e) = hostns::attach_host_veth(&h, host_idx, bridge_idx, conf.hairpin_mode).await {
-        hostns::del_link(&h, host_idx).await;
+    if let Err(e) = hostns::attach_host_veth(h, host_idx, bridge_idx, conf.hairpin_mode).await {
+        hostns::del_link(h, host_idx).await;
         return Err(err(5, "attach host veth").with_details(format!("{e:#}")));
     }
 
@@ -88,13 +110,18 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
                 .nth(1)
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(24);
-            let _ = hostns::set_bridge_gateway(&h, bridge_idx, gw, prefix).await;
+            let _ = hostns::set_bridge_gateway(h, bridge_idx, gw, prefix).await;
         }
         let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", "1");
     }
+    Ok(())
+}
 
-    // 7. relay the IPAM result as our result (0.3.1 chain: portmap consumes it)
-    Ok(out.stdout)
+/// Best-effort IPAM release (used on ADD failure paths).
+fn ipam_del(conf: &BridgeConf, args: &CniArgs, stdin: &str) {
+    let mut del = args.clone();
+    del.command = "DEL".to_string();
+    let _ = cni::delegate::run_delegate(&conf.ipam.kind, &del, stdin);
 }
 
 fn cmd_del(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<String, CniError> {
