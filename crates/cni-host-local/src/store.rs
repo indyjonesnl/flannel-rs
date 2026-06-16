@@ -43,7 +43,10 @@ impl Store {
     }
 
     pub fn reserve(&self, ip: Ipv4Addr, container_id: &str, ifname: &str) -> io::Result<()> {
-        fs::write(self.dir.join(ip.to_string()), format!("{container_id}\n{ifname}"))?;
+        fs::write(
+            self.dir.join(ip.to_string()),
+            format!("{container_id}\n{ifname}"),
+        )?;
         fs::write(self.dir.join("last_reserved_ip.0"), ip.to_string())?;
         Ok(())
     }
@@ -87,7 +90,9 @@ impl Store {
 mod tests {
     use super::*;
 
-    fn ip(s: &str) -> Ipv4Addr { s.parse().unwrap() }
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
 
     #[test]
     fn reserve_then_leased_and_last() {

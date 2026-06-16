@@ -38,7 +38,11 @@ impl Allocator {
             return None;
         }
         let start = match last {
-            Some(l) => hosts.iter().position(|h| *h == l).map(|i| i + 1).unwrap_or(0),
+            Some(l) => hosts
+                .iter()
+                .position(|h| *h == l)
+                .map(|i| i + 1)
+                .unwrap_or(0),
             None => 0,
         };
         for k in 0..hosts.len() {
@@ -60,8 +64,12 @@ fn first_usable(net: Ipv4Network) -> Ipv4Addr {
 mod tests {
     use super::*;
 
-    fn net(s: &str) -> Ipv4Network { s.parse().unwrap() }
-    fn ip(s: &str) -> Ipv4Addr { s.parse().unwrap() }
+    fn net(s: &str) -> Ipv4Network {
+        s.parse().unwrap()
+    }
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
 
     #[test]
     fn default_gateway_is_first_usable() {
@@ -79,22 +87,32 @@ mod tests {
     fn sequential_after_last_reserved() {
         let a = Allocator::new(net("10.244.1.0/24"), None);
         let leased: HashSet<_> = [ip("10.244.1.2")].into_iter().collect();
-        assert_eq!(a.next_ip(&leased, Some(ip("10.244.1.2"))), Some(ip("10.244.1.3")));
+        assert_eq!(
+            a.next_ip(&leased, Some(ip("10.244.1.2"))),
+            Some(ip("10.244.1.3"))
+        );
     }
 
     #[test]
     fn wraps_around_to_find_free() {
         let a = Allocator::new(net("10.244.1.0/24"), None);
         let mut leased: HashSet<Ipv4Addr> = HashSet::new();
-        for o in 3..=254 { leased.insert(ip(&format!("10.244.1.{o}"))); }
-        assert_eq!(a.next_ip(&leased, Some(ip("10.244.1.254"))), Some(ip("10.244.1.2")));
+        for o in 3..=254 {
+            leased.insert(ip(&format!("10.244.1.{o}")));
+        }
+        assert_eq!(
+            a.next_ip(&leased, Some(ip("10.244.1.254"))),
+            Some(ip("10.244.1.2"))
+        );
     }
 
     #[test]
     fn exhausted_range_returns_none() {
         let a = Allocator::new(net("10.244.1.0/24"), None);
         let mut leased: HashSet<Ipv4Addr> = HashSet::new();
-        for o in 2..=254 { leased.insert(ip(&format!("10.244.1.{o}"))); }
+        for o in 2..=254 {
+            leased.insert(ip(&format!("10.244.1.{o}")));
+        }
         assert_eq!(a.next_ip(&leased, None), None);
     }
 

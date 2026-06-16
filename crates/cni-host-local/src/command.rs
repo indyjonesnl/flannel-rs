@@ -10,21 +10,35 @@ use std::net::Ipv4Addr;
 const DEFAULT_DATA_DIR: &str = "/var/lib/cni/networks";
 
 fn load(stdin: &str) -> Result<NetConf, CniError> {
-    NetConf::parse(stdin).map_err(|e| CniError::new(6, "failed to decode network config").with_details(e.to_string()))
+    NetConf::parse(stdin).map_err(|e| {
+        CniError::new(6, "failed to decode network config").with_details(e.to_string())
+    })
 }
 
 fn allocator_for(nc: &NetConf) -> Result<Allocator, CniError> {
-    let range = nc.ipam.ranges.first().and_then(|r| r.first())
+    let range = nc
+        .ipam
+        .ranges
+        .first()
+        .and_then(|r| r.first())
         .ok_or_else(|| CniError::new(7, "ipam.ranges is empty"))?;
-    let net: Ipv4Network = range.subnet.parse()
+    let net: Ipv4Network = range
+        .subnet
+        .parse()
         .map_err(|_| CniError::new(7, format!("invalid subnet {}", range.subnet)))?;
     // Guard against a misconfigured wide range: allocation materializes the host
     // set, so cap at /16 (flannel hands host-local a per-node /24).
     if net.prefix() < 16 {
-        return Err(CniError::new(7, format!("subnet {} too large (min prefix /16)", range.subnet)));
+        return Err(CniError::new(
+            7,
+            format!("subnet {} too large (min prefix /16)", range.subnet),
+        ));
     }
     let gw: Option<Ipv4Addr> = match &range.gateway {
-        Some(g) => Some(g.parse().map_err(|_| CniError::new(7, format!("invalid gateway {g}")))?),
+        Some(g) => Some(
+            g.parse()
+                .map_err(|_| CniError::new(7, format!("invalid gateway {g}")))?,
+        ),
         None => None,
     };
     Ok(Allocator::new(net, gw))
@@ -32,23 +46,34 @@ fn allocator_for(nc: &NetConf) -> Result<Allocator, CniError> {
 
 fn store_for(nc: &NetConf) -> Result<Store, CniError> {
     let data_dir = nc.ipam.data_dir.as_deref().unwrap_or(DEFAULT_DATA_DIR);
-    Store::new(data_dir, &nc.name).map_err(|e| CniError::new(5, "failed to open data dir").with_details(e.to_string()))
+    Store::new(data_dir, &nc.name)
+        .map_err(|e| CniError::new(5, "failed to open data dir").with_details(e.to_string()))
 }
 
 pub fn cmd_add(args: &CniArgs, stdin: &str) -> Result<String, CniError> {
     let nc = load(stdin)?;
     let alloc = allocator_for(&nc)?;
     let store = store_for(&nc)?;
-    let _lock = store.lock().map_err(|e| CniError::new(11, "failed to lock data dir").with_details(e.to_string()))?;
+    let _lock = store
+        .lock()
+        .map_err(|e| CniError::new(11, "failed to lock data dir").with_details(e.to_string()))?;
 
-    let leased = store.leased().map_err(|e| CniError::new(5, "read leases").with_details(e.to_string()))?;
-    let ip = alloc.next_ip(&leased, store.last_reserved())
+    let leased = store
+        .leased()
+        .map_err(|e| CniError::new(5, "read leases").with_details(e.to_string()))?;
+    let ip = alloc
+        .next_ip(&leased, store.last_reserved())
         .ok_or_else(|| CniError::new(7, "no IP addresses available in range"))?;
-    store.reserve(ip, &args.container_id, &args.ifname)
+    store
+        .reserve(ip, &args.container_id, &args.ifname)
         .map_err(|e| CniError::new(5, "write lease").with_details(e.to_string()))?;
 
     let result = CniResult {
-        cni_version: if nc.cni_version.is_empty() { "0.3.1".into() } else { nc.cni_version.clone() },
+        cni_version: if nc.cni_version.is_empty() {
+            "0.3.1".into()
+        } else {
+            nc.cni_version.clone()
+        },
         ips: vec![IpResult {
             version: "4".into(),
             address: format!("{}/{}", ip, alloc.prefix()),
@@ -62,8 +87,11 @@ pub fn cmd_add(args: &CniArgs, stdin: &str) -> Result<String, CniError> {
 pub fn cmd_del(args: &CniArgs, stdin: &str) -> Result<String, CniError> {
     let nc = load(stdin)?;
     let store = store_for(&nc)?;
-    let _lock = store.lock().map_err(|e| CniError::new(11, "failed to lock data dir").with_details(e.to_string()))?;
-    store.release(&args.container_id, &args.ifname)
+    let _lock = store
+        .lock()
+        .map_err(|e| CniError::new(11, "failed to lock data dir").with_details(e.to_string()))?;
+    store
+        .release(&args.container_id, &args.ifname)
         .map_err(|e| CniError::new(5, "release lease").with_details(e.to_string()))?;
     Ok(String::new())
 }
@@ -71,7 +99,10 @@ pub fn cmd_del(args: &CniArgs, stdin: &str) -> Result<String, CniError> {
 pub fn cmd_check(args: &CniArgs, stdin: &str) -> Result<String, CniError> {
     let nc = load(stdin)?;
     let store = store_for(&nc)?;
-    if store.has(&args.container_id, &args.ifname).map_err(|e| CniError::new(5, "check lease").with_details(e.to_string()))? {
+    if store
+        .has(&args.container_id, &args.ifname)
+        .map_err(|e| CniError::new(5, "check lease").with_details(e.to_string()))?
+    {
         Ok(String::new())
     } else {
         Err(CniError::new(7, "no allocation found for container"))
@@ -84,13 +115,21 @@ mod tests {
     use std::collections::HashMap;
 
     fn args(cmd: &str, cid: &str) -> CniArgs {
-        let m: HashMap<String, String> = [("CNI_COMMAND", cmd), ("CNI_CONTAINERID", cid), ("CNI_IFNAME", "eth0")]
-            .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let m: HashMap<String, String> = [
+            ("CNI_COMMAND", cmd),
+            ("CNI_CONTAINERID", cid),
+            ("CNI_IFNAME", "eth0"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
         CniArgs::from_map(&m).unwrap()
     }
 
     fn conf(data_dir: &str) -> String {
-        format!(r#"{{"cniVersion":"0.3.1","name":"cbr0","ipam":{{"type":"host-local","ranges":[[{{"subnet":"10.244.1.0/24"}}]],"routes":[{{"dst":"0.0.0.0/0"}}],"dataDir":"{data_dir}"}}}}"#)
+        format!(
+            r#"{{"cniVersion":"0.3.1","name":"cbr0","ipam":{{"type":"host-local","ranges":[[{{"subnet":"10.244.1.0/24"}}]],"routes":[{{"dst":"0.0.0.0/0"}}],"dataDir":"{data_dir}"}}}}"#
+        )
     }
 
     #[test]
@@ -127,11 +166,13 @@ mod tests {
         // so the next allocation continues from after .2 and hands out .3.
         assert_eq!(v["ips"][0]["address"], "10.244.1.3/24");
         // Confirm .2 was actually freed and is allocatable on a subsequent wrap.
-        assert!(!crate::store::Store::new(tmp.path().to_str().unwrap(), "cbr0")
-            .unwrap()
-            .leased()
-            .unwrap()
-            .contains(&"10.244.1.2".parse().unwrap()));
+        assert!(
+            !crate::store::Store::new(tmp.path().to_str().unwrap(), "cbr0")
+                .unwrap()
+                .leased()
+                .unwrap()
+                .contains(&"10.244.1.2".parse().unwrap())
+        );
     }
 
     #[test]

@@ -28,7 +28,9 @@ fn run() -> Result<String, CniError> {
 fn main() -> ExitCode {
     match run() {
         Ok(out) => {
-            if !out.is_empty() { print!("{out}"); }
+            if !out.is_empty() {
+                print!("{out}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

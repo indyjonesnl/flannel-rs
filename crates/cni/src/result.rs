@@ -37,7 +37,10 @@ mod tests {
                 address: "10.244.1.2/24".into(),
                 gateway: Some("10.244.1.1".into()),
             }],
-            routes: vec![Route { dst: "0.0.0.0/0".into(), gw: None }],
+            routes: vec![Route {
+                dst: "0.0.0.0/0".into(),
+                gw: None,
+            }],
         };
         let v: serde_json::Value = serde_json::from_str(&r.to_json()).unwrap();
         assert_eq!(v["cniVersion"], "0.3.1");

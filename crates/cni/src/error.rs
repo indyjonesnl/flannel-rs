@@ -14,7 +14,12 @@ pub struct CniError {
 
 impl CniError {
     pub fn new(code: u32, msg: impl Into<String>) -> Self {
-        Self { cni_version: "0.3.1".into(), code, msg: msg.into(), details: None }
+        Self {
+            cni_version: "0.3.1".into(),
+            code,
+            msg: msg.into(),
+            details: None,
+        }
     }
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());

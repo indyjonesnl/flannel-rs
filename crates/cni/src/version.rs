@@ -26,7 +26,8 @@ mod tests {
 
     #[test]
     fn advertises_supported_versions() {
-        let v: serde_json::Value = serde_json::from_str(&VersionResult::supported().to_json()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&VersionResult::supported().to_json()).unwrap();
         assert_eq!(v["supportedVersions"][0], "0.3.0");
         assert_eq!(v["supportedVersions"][1], "0.3.1");
     }
