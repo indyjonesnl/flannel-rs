@@ -1,4 +1,5 @@
 mod alloc;
+mod command;
 mod store;
 
 fn main() {
