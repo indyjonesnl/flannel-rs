@@ -1,5 +1,5 @@
-use cni::env::CniArgs;
-use cni::error::CniError;
+use crate::env::CniArgs;
+use crate::error::CniError;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

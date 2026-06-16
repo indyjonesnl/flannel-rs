@@ -108,7 +108,7 @@ spec:
       - name: install-cni-plugins-rs
         image: flannel-rs:dev
         imagePullPolicy: Never
-        command: ["sh", "-c", "cp -f /opt/cni/bin/flannel /opt/cni/bin/host-local /host/opt/cni/bin/"]
+        command: ["sh", "-c", "cp -f /opt/cni/bin/flannel /opt/cni/bin/host-local /opt/cni/bin/bridge /host/opt/cni/bin/"]
         volumeMounts:
         - name: cni-plugin
           mountPath: /host/opt/cni/bin
