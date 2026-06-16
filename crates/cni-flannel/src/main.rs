@@ -1,4 +1,5 @@
 mod delegate;
+mod exec;
 mod subnetenv;
 
 fn main() {
