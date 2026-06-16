@@ -35,15 +35,19 @@ pub fn run_delegate(
         .map_err(|e| {
             CniError::new(5, format!("exec delegate {name} failed")).with_details(e.to_string())
         })?;
-    child
-        .stdin
-        .take()
-        .expect("stdin piped")
-        .write_all(stdin_json.as_bytes())
-        .map_err(|e| CniError::new(5, "write delegate stdin").with_details(e.to_string()))?;
+    // Write stdin on a separate thread while wait_with_output() drains the
+    // child's stdout, so a delegate that fills its stdout pipe buffer before
+    // reading all of stdin can't deadlock against us.
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let payload = stdin_json.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&payload);
+        // stdin dropped here -> EOF to the child.
+    });
     let out = child
         .wait_with_output()
         .map_err(|e| CniError::new(5, "wait for delegate").with_details(e.to_string()))?;
+    let _ = writer.join();
     Ok(DelegateOutput {
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         success: out.status.success(),
