@@ -1,4 +1,5 @@
 mod alloc;
+mod store;
 
 fn main() {
     eprintln!("host-local (rust) — not yet implemented");
