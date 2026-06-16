@@ -11,8 +11,6 @@ use config::BridgeConf;
 use std::io::Read;
 use std::process::ExitCode;
 
-const CONT_IFNAME_TEMP_PREFIX: &str = "vethc";
-
 fn read_stdin() -> String {
     let mut s = String::new();
     let _ = std::io::stdin().read_to_string(&mut s);
@@ -32,7 +30,7 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
     // 1. ensure bridge
     let bridge_idx = hostns::ensure_bridge(&h, &conf.bridge, conf.mtu)
         .await
-        .map_err(|e| err(7, "ensure bridge").with_details(e.to_string()))?;
+        .map_err(|e| err(7, "ensure bridge").with_details(format!("{e:#}")))?;
 
     // 2. IPAM ADD
     let out = cni::delegate::run_delegate(&conf.ipam.kind, args, stdin)?;
@@ -47,20 +45,17 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
 
     // 3. veth pair
     let host_veth = plan::host_veth_name(&args.container_id);
-    let temp_cont = format!(
-        "{CONT_IFNAME_TEMP_PREFIX}{}",
-        &plan::host_veth_name(&args.container_id)[4..]
-    );
+    let temp_cont = plan::temp_cont_name(&args.container_id);
     let (host_idx, peer_idx) = hostns::create_veth(&h, &host_veth, &temp_cont, conf.mtu)
         .await
-        .map_err(|e| err(5, "create veth").with_details(e.to_string()))?;
+        .map_err(|e| err(5, "create veth").with_details(format!("{e:#}")))?;
 
     // 4. move container end into the netns, configure it
     let netns_fd =
         open_netns(&args.netns).map_err(|e| err(5, "open netns").with_details(e.to_string()))?;
     if let Err(e) = hostns::move_to_netns(&h, peer_idx, netns_fd).await {
         hostns::del_link(&h, host_idx).await;
-        return Err(err(5, "move veth to netns").with_details(e.to_string()));
+        return Err(err(5, "move veth to netns").with_details(format!("{e:#}")));
     }
     if let Err(e) = contns::configure_container_iface(
         args.netns.clone(),
@@ -70,13 +65,13 @@ async fn cmd_add(args: &CniArgs, conf: &BridgeConf, stdin: &str) -> Result<Strin
         conf.is_default_gateway,
     ) {
         hostns::del_link(&h, host_idx).await;
-        return Err(err(7, "configure container iface").with_details(e.to_string()));
+        return Err(err(7, "configure container iface").with_details(format!("{e:#}")));
     }
 
     // 5. attach host veth to bridge + hairpin
     if let Err(e) = hostns::attach_host_veth(&h, host_idx, bridge_idx, conf.hairpin_mode).await {
         hostns::del_link(&h, host_idx).await;
-        return Err(err(5, "attach host veth").with_details(e.to_string()));
+        return Err(err(5, "attach host veth").with_details(format!("{e:#}")));
     }
 
     // 6. isGateway: bridge IP + ip_forward

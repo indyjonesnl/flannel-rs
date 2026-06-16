@@ -2,15 +2,34 @@ use cni::result::CniResult;
 use ipnetwork::Ipv4Network;
 use std::net::Ipv4Addr;
 
+/// Linux IFNAMSIZ allows at most 15 usable characters in an interface name.
+const IFNAME_MAX: usize = 15;
+
+/// Sanitized alphanumeric run of the container id (no length cap applied).
+fn sanitized_id(container_id: &str) -> String {
+    container_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
 /// Deterministic host-side veth name from the container id, within the 15-char
 /// IFNAMSIZ limit. Format: "veth" + first 11 alphanumeric chars of the id.
 pub fn host_veth_name(container_id: &str) -> String {
-    let id: String = container_id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .take(11)
-        .collect();
+    let id: String = sanitized_id(container_id).chars().take(11).collect();
     format!("veth{id}")
+}
+
+/// Deterministic temporary name for the container end of the veth pair while it
+/// still lives in the host ns (before it is moved + renamed to eth0). MUST stay
+/// within IFNAMSIZ: the "vethc" prefix is 5 chars, leaving room for 10 id chars
+/// (15 total). A 16-char name makes the kernel reject veth creation with ERANGE.
+pub fn temp_cont_name(container_id: &str) -> String {
+    let id: String = sanitized_id(container_id)
+        .chars()
+        .take(IFNAME_MAX - 5)
+        .collect();
+    format!("vethc{id}")
 }
 
 /// The pod's address+prefix, gateway, and route destinations from the IPAM result.
@@ -63,6 +82,19 @@ mod tests {
         assert!(n.len() <= 15, "len {}", n.len());
         assert_eq!(n, host_veth_name("ec5a938858dce08f4179b48658de7bbd"));
         assert!(n.starts_with("veth"));
+    }
+
+    #[test]
+    fn temp_cont_name_is_within_ifnamsize() {
+        // 64-hex container id (realistic) must not exceed IFNAMSIZ (15 chars);
+        // a 16-char name makes the kernel reject veth creation with ERANGE.
+        let n = temp_cont_name("ec5a938858dce08f4179b48658de7bbd9d9d9d9d9d9d9d9d");
+        assert!(n.len() <= 15, "len {} name {}", n.len(), n);
+        assert!(n.starts_with("vethc"));
+        assert_eq!(
+            n,
+            temp_cont_name("ec5a938858dce08f4179b48658de7bbd9d9d9d9d9d9d9d9d")
+        );
     }
 
     #[test]
