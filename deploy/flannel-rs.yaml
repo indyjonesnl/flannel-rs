@@ -108,6 +108,15 @@ spec:
         volumeMounts:
         - name: cni-plugin
           mountPath: /opt/cni/bin
+      # Overwrite the upstream Go host-local with our Rust build (milestone 2a).
+      # Mounted at /host/... so it doesn't shadow the image's /opt/cni/bin/host-local.
+      - name: install-host-local-rs
+        image: flannel-rs:dev
+        imagePullPolicy: Never
+        command: ["cp", "-f", "/opt/cni/bin/host-local", "/host/opt/cni/bin/host-local"]
+        volumeMounts:
+        - name: cni-plugin
+          mountPath: /host/opt/cni/bin
       - name: install-cni
         image: flannel-rs:dev
         imagePullPolicy: Never
