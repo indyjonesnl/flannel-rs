@@ -102,18 +102,13 @@ spec:
       - operator: Exists
       serviceAccountName: flannel
       initContainers:
-      - name: install-cni-plugin
-        image: ghcr.io/flannel-io/flannel-cni-plugin:v1.9.1-flannel1
-        command: ["cp", "-f", "/flannel", "/opt/cni/bin/flannel"]
-        volumeMounts:
-        - name: cni-plugin
-          mountPath: /opt/cni/bin
-      # Overwrite the upstream Go host-local with our Rust build (milestone 2a).
-      # Mounted at /host/... so it doesn't shadow the image's /opt/cni/bin/host-local.
-      - name: install-host-local-rs
+      # Install the Rust CNI plugins (flannel meta-plugin + host-local IPAM) onto
+      # each node, overwriting the Go binaries. Mounted at /host/... so it does not
+      # shadow the image's own /opt/cni/bin. No upstream Go flannel-cni-plugin image.
+      - name: install-cni-plugins-rs
         image: flannel-rs:dev
         imagePullPolicy: Never
-        command: ["cp", "-f", "/opt/cni/bin/host-local", "/host/opt/cni/bin/host-local"]
+        command: ["sh", "-c", "cp -f /opt/cni/bin/flannel /opt/cni/bin/host-local /host/opt/cni/bin/"]
         volumeMounts:
         - name: cni-plugin
           mountPath: /host/opt/cni/bin
