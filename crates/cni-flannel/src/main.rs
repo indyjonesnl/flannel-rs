@@ -1,5 +1,4 @@
 mod delegate;
-mod exec;
 mod subnetenv;
 
 use cni::env::CniArgs;
@@ -69,7 +68,7 @@ fn run() -> Result<(String, bool), CniError> {
         "ADD" | "DEL" | "CHECK" => {
             let stdin = read_stdin();
             let (dtype, djson) = delegate_json(&stdin, &args.command)?;
-            let out = exec::run_delegate(&dtype, &args, &djson)?;
+            let out = cni::delegate::run_delegate(&dtype, &args, &djson)?;
             Ok((out.stdout, out.success))
         }
         other => Err(CniError::new(4, format!("unknown CNI_COMMAND {other}"))),

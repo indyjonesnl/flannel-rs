@@ -1,16 +1,16 @@
 use crate::config::Route;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CniResult {
     #[serde(rename = "cniVersion")]
     pub cni_version: String,
     pub ips: Vec<IpResult>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub routes: Vec<Route>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IpResult {
     pub version: String,
     pub address: String,
@@ -22,11 +22,24 @@ impl CniResult {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("CniResult serializes")
     }
+
+    pub fn parse(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_host_local_result() {
+        let raw = r#"{"cniVersion":"0.3.1","ips":[{"version":"4","address":"10.244.1.2/24","gateway":"10.244.1.1"}],"routes":[{"dst":"10.244.0.0/16"}]}"#;
+        let r = CniResult::parse(raw).unwrap();
+        assert_eq!(r.ips[0].address, "10.244.1.2/24");
+        assert_eq!(r.ips[0].gateway.as_deref(), Some("10.244.1.1"));
+        assert_eq!(r.routes[0].dst, "10.244.0.0/16");
+    }
 
     #[test]
     fn serializes_0_3_1_result() {
