@@ -18,6 +18,11 @@ fn allocator_for(nc: &NetConf) -> Result<Allocator, CniError> {
         .ok_or_else(|| CniError::new(7, "ipam.ranges is empty"))?;
     let net: Ipv4Network = range.subnet.parse()
         .map_err(|_| CniError::new(7, format!("invalid subnet {}", range.subnet)))?;
+    // Guard against a misconfigured wide range: allocation materializes the host
+    // set, so cap at /16 (flannel hands host-local a per-node /24).
+    if net.prefix() < 16 {
+        return Err(CniError::new(7, format!("subnet {} too large (min prefix /16)", range.subnet)));
+    }
     let gw: Option<Ipv4Addr> = match &range.gateway {
         Some(g) => Some(g.parse().map_err(|_| CniError::new(7, format!("invalid gateway {g}")))?),
         None => None,
@@ -136,5 +141,16 @@ mod tests {
         assert!(cmd_check(&args("CHECK", "cid1"), &c).is_err());
         cmd_add(&args("ADD", "cid1"), &c).unwrap();
         assert!(cmd_check(&args("CHECK", "cid1"), &c).is_ok());
+    }
+
+    #[test]
+    fn rejects_oversized_subnet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = format!(
+            r#"{{"cniVersion":"0.3.1","name":"cbr0","ipam":{{"type":"host-local","ranges":[[{{"subnet":"10.0.0.0/8"}}]],"dataDir":"{}"}}}}"#,
+            tmp.path().to_str().unwrap()
+        );
+        let err = cmd_add(&args("ADD", "cid1"), &c).unwrap_err();
+        assert_eq!(err.code, 7);
     }
 }

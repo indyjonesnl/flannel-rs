@@ -52,7 +52,8 @@ impl Allocator {
 }
 
 fn first_usable(net: Ipv4Network) -> Ipv4Addr {
-    Ipv4Addr::from(u32::from(net.network()) + 1)
+    // wrapping guards the (unreachable for real pod CIDRs) 255.255.255.255 case.
+    Ipv4Addr::from(u32::from(net.network()).wrapping_add(1))
 }
 
 #[cfg(test)]
