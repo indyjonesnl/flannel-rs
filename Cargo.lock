@@ -179,6 +179,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cni-flannel"
+version = "0.1.0"
+dependencies = [
+ "cni",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cni-host-local"
 version = "0.1.0"
 dependencies = [
