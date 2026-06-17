@@ -1,3 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/flanneld", "crates/cni", "crates/cni-host-local", "crates/cni-flannel", "crates/cni-bridge", "crates/cni-portmap"]
+
+# Single source of truth for the release version. Every crate inherits this via
+# `version.workspace = true`, so `flanneld --version` (CARGO_PKG_VERSION) always
+# matches the published image/tarball. The release workflow asserts the git tag
+# equals this value, so the crate version and the GitHub release tag can't drift.
+[workspace.package]
+version = "0.1.2"
