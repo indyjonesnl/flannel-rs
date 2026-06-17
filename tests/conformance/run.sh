@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VARIANT="${1:?usage: run.sh <flannel-go|flannel-rs>}"
+VARIANT="${1:?usage: run.sh <flannel-go|flannel-rs> [sig-network|sig-node]}"
+SUITE="${2:-sig-network}"
 
 # Shared kind cluster bring-up (create + CNI bridge + bridge netfilter + load
 # image if rs + apply manifest + wait ds/nodes). Same setup the smoke harness
@@ -11,17 +12,33 @@ source "$(cd "$(dirname "$0")/../lib" && pwd)/cluster.sh"
 # Conformance image MUST match the cluster's k8s version (node image v1.35.0).
 CONFORMANCE_IMAGE="registry.k8s.io/conformance:v1.35.0"
 
-# All networking conformance tests: pod-to-pod connectivity, Services, DNS,
-# endpoints.
-FOCUS='\[sig-network\].*\[Conformance\]'
+# Focus/skip per suite. Each suite gates a distinct slice of the upstream
+# conformance set. Skips are regex (alternated); each entry MUST carry a
+# one-line justification. Keep skip lists minimal so coverage is not silently
+# reduced.
+case "$SUITE" in
+  sig-network)
+    # All networking conformance tests: pod-to-pod connectivity, Services,
+    # DNS, endpoints.
+    FOCUS='\[sig-network\].*\[Conformance\]'
+    # NOTE: cloud LoadBalancer tests are NOT tagged [Conformance], so the
+    # focus already excludes them; no skip needed for those.
+    SKIP=""
+    ;;
+  sig-node)
+    # Node-level conformance: pod lifecycle, probes, init/ephemeral
+    # containers, env from Secret/ConfigMap, downward API, runtime. Proves a
+    # CNI swap doesn't regress kubelet/runtime pod handling.
+    FOCUS='\[sig-node\].*\[Conformance\]'
+    SKIP=""
+    ;;
+  *)
+    echo "unknown suite: $SUITE (want sig-network|sig-node)" >&2
+    exit 2
+    ;;
+esac
 
-# Skips (regex, alternated). Each entry MUST have a one-line justification.
-# NOTE: cloud LoadBalancer tests are NOT tagged [Conformance], so the focus
-# already excludes them; no skip needed for those. Keep this list minimal so
-# coverage is not silently reduced.
-SKIP=""
-
-OUTPUT_DIR="$(cd "$(dirname "$0")" && pwd)/results"
+OUTPUT_DIR="$(cd "$(dirname "$0")" && pwd)/results/$SUITE"
 mkdir -p "$OUTPUT_DIR"
 
 # Hydrophone uses the current kubeconfig context. kind sets the current context
@@ -30,7 +47,7 @@ mkdir -p "$OUTPUT_DIR"
 KCFG="$OUTPUT_DIR/kubeconfig"
 
 dump_diagnostics() {
-  echo "============ CONFORMANCE DIAGNOSTICS ($VARIANT) ============"
+  echo "============ CONFORMANCE DIAGNOSTICS ($SUITE/$VARIANT) ============"
   kubectl --context "$CTX" get nodes -o wide || true
   kubectl --context "$CTX" get pods -A -o wide || true
   echo "--- recent events ---"
@@ -79,4 +96,4 @@ fi
 # Hydrophone exits non-zero if any focused test fails.
 hydrophone "${HYDRO_ARGS[@]}"
 
-echo "CONFORMANCE PASSED: $VARIANT"
+echo "CONFORMANCE PASSED: $SUITE/$VARIANT"
