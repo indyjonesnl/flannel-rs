@@ -131,7 +131,16 @@ mod tests {
         let a = dnat_args(&mapping(), "10.244.1.5".parse().unwrap());
         assert_eq!(
             a,
-            vec!["-p", "tcp", "--dport", "31180", "-j", "DNAT", "--to-destination", "10.244.1.5:80"]
+            vec![
+                "-p",
+                "tcp",
+                "--dport",
+                "31180",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.244.1.5:80"
+            ]
         );
     }
 

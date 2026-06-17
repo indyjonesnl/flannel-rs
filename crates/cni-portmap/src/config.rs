@@ -5,6 +5,8 @@ use std::net::Ipv4Addr;
 
 #[derive(Debug, Deserialize)]
 pub struct PortmapConf {
+    // Part of the netconf schema; parsed but not consumed by the dispatch.
+    #[allow(dead_code)]
     #[serde(rename = "cniVersion", default)]
     pub cni_version: String,
     #[serde(rename = "prevResult", default)]
