@@ -1,0 +1,122 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish Release + push image to GHCR (false = dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # create GitHub Release
+  packages: write # push to GHCR
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build static musl binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust + musl targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+
+      - name: Install zig (cross-linker for cargo-zigbuild)
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Build (amd64 + arm64, static musl)
+        run: |
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            cargo zigbuild --release --target "$t" \
+              -p flanneld -p cni-host-local -p cni-flannel -p cni-bridge -p cni-portmap
+          done
+
+      - name: Stage binaries + tarballs
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          [ "${{ github.event_name }}" = "workflow_dispatch" ] && VERSION="dev-${GITHUB_SHA::8}"
+          mkdir -p dist/amd64 dist/arm64 out
+          cp target/x86_64-unknown-linux-musl/release/{flanneld,flannel,bridge,host-local,portmap} dist/amd64/
+          cp target/aarch64-unknown-linux-musl/release/{flanneld,flannel,bridge,host-local,portmap} dist/arm64/
+          tar -czf "out/flannel-rs_${VERSION}_linux_amd64.tar.gz" -C dist/amd64 .
+          tar -czf "out/flannel-rs_${VERSION}_linux_arm64.tar.gz" -C dist/arm64 .
+          ( cd out && sha256sum *.tar.gz > "flannel-rs_${VERSION}_checksums.txt" )
+          ls -l out
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flannel-rs-binaries
+          path: |
+            out/
+            dist/
+          retention-days: 7
+
+  publish:
+    name: publish release + image
+    needs: build
+    runs-on: ubuntu-latest
+    # Publish on a tag push, or a manual run with publish=true. Dry runs skip this.
+    if: github.event_name == 'push' || inputs.publish
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: flannel-rs-binaries
+
+      - name: Compute version
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          [ "${{ github.event_name }}" = "workflow_dispatch" ] && VERSION="dev-${GITHUB_SHA::8}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release with binary tarballs
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/flannel-rs_*_linux_amd64.tar.gz
+            out/flannel-rs_*_linux_arm64.tar.gz
+            out/flannel-rs_*_checksums.txt
+          generate_release_notes: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/indyjonesnl/flannel-rs:${{ steps.ver.outputs.version }}
+            ghcr.io/indyjonesnl/flannel-rs:latest
+            ghcr.io/indyjonesnl/flannel-rs:${{ github.sha }}

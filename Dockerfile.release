@@ -1,0 +1,15 @@
+# Release image: copies prebuilt static binaries staged under dist/<arch>/.
+# Built per-arch by `docker buildx` (TARGETARCH is set automatically). No cargo
+# build here — the binaries are produced by the release workflow's musl build.
+FROM debian:bookworm-slim
+ARG TARGETARCH
+# flanneld shells out to iptables; iproute2 + ca-certificates for runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 iptables ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY dist/${TARGETARCH}/flanneld   /usr/local/bin/flanneld
+COPY dist/${TARGETARCH}/flannel    /opt/cni/bin/flannel
+COPY dist/${TARGETARCH}/bridge     /opt/cni/bin/bridge
+COPY dist/${TARGETARCH}/host-local /opt/cni/bin/host-local
+COPY dist/${TARGETARCH}/portmap    /opt/cni/bin/portmap
+ENTRYPOINT ["/usr/local/bin/flanneld"]
