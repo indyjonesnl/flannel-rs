@@ -90,21 +90,30 @@ impl Iptables {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
 
     // A fake iptables that records each invocation's args to $FAKE_LOG and
     // exits 0, except `-C` (check) exits 1 so ensure_rule proceeds to `-A`.
     fn fake_iptables(dir: &Path) -> String {
+        use std::io::Write;
         let p = dir.join("fake-iptables");
-        std::fs::write(
-            &p,
-            "#!/bin/sh\necho \"$@\" >> \"$FAKE_LOG\"\nfor a in \"$@\"; do [ \"$a\" = \"-C\" ] && exit 1; done\nexit 0\n",
+        // Create with the exec bit set and fully close (sync + drop) the write
+        // handle before returning, so a later exec can't race an open fd
+        // (ETXTBSY "Text file busy") on a busy test host.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o755)
+            .open(&p)
+            .unwrap();
+        f.write_all(
+            b"#!/bin/sh\necho \"$@\" >> \"$FAKE_LOG\"\nfor a in \"$@\"; do [ \"$a\" = \"-C\" ] && exit 1; done\nexit 0\n",
         )
         .unwrap();
-        let mut perm = std::fs::metadata(&p).unwrap().permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&p, perm).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
         p.to_str().unwrap().to_string()
     }
 
