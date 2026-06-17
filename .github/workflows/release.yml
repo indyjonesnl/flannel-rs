@@ -24,6 +24,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The git tag and the crate version are one thing. A tag push whose name
+      # doesn't match [workspace.package] version is a mistake — fail loudly
+      # rather than ship an image whose `--version` lies. (Skipped on dry runs,
+      # which have no tag.)
+      - name: Verify git tag matches workspace version
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate_ver="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)"
+          echo "tag=$tag workspace version=$crate_ver"
+          if [ "$tag" != "$crate_ver" ]; then
+            echo "::error::git tag v$tag != [workspace.package] version $crate_ver — bump Cargo.toml before tagging" >&2
+            exit 1
+          fi
+
       - name: Install Rust + musl targets
         uses: dtolnay/rust-toolchain@stable
         with:

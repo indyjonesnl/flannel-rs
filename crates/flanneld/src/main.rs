@@ -119,8 +119,22 @@ async fn bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
     }
 }
 
+/// True if any arg requests the version (`--version`/`-V`). Pure so the parsing
+/// is unit-tested without spawning the process.
+fn wants_version<I: IntoIterator<Item = String>>(args: I) -> bool {
+    args.into_iter().any(|a| a == "--version" || a == "-V")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Handle --version before anything else: lets `docker run <image> --version`
+    // exec and exit 0 without NODE_NAME or a cluster — a cheap release smoke test
+    // that the image's binaries are actually runnable.
+    if wants_version(std::env::args().skip(1)) {
+        println!("flanneld {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -228,6 +242,17 @@ mod tests {
             Fatal::Backend(kind) => assert_eq!(kind, "host-gw"),
             other => panic!("expected Backend, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn version_flag_detected() {
+        assert!(wants_version(vec![
+            "flanneld".to_string(),
+            "--version".to_string()
+        ]));
+        assert!(wants_version(vec!["-V".to_string()]));
+        assert!(!wants_version(vec!["flanneld".to_string()]));
+        assert!(!wants_version(Vec::<String>::new()));
     }
 
     #[test]

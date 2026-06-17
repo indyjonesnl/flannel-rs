@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "cni"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "cni-bridge"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "cni",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "cni-flannel"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "cni",
  "serde",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "cni-host-local"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "cni",
  "fs2",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "cni-portmap"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "cni",
  "ipnetwork",
@@ -392,7 +392,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flanneld"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "futures",
