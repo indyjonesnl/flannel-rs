@@ -102,6 +102,7 @@ mod tests {
 
     #[test]
     fn execs_delegate_and_relays_stdout() {
+        let _g = crate::exec_test_guard();
         let tmp = tempfile::tempdir().unwrap();
         write_script(tmp.path(), "bridge", "#!/bin/sh\ncat > \"$CNI_PATH/received_stdin\"\necho '{\"cniVersion\":\"0.3.1\",\"ips\":[]}'\n");
         let path = tmp.path().to_str().unwrap();
@@ -115,6 +116,7 @@ mod tests {
 
     #[test]
     fn failing_delegate_reports_unsuccessful() {
+        let _g = crate::exec_test_guard();
         let tmp = tempfile::tempdir().unwrap();
         write_script(
             tmp.path(),
@@ -129,6 +131,7 @@ mod tests {
 
     #[test]
     fn missing_delegate_is_error() {
+        let _g = crate::exec_test_guard();
         let tmp = tempfile::tempdir().unwrap();
         let err =
             run_delegate("nonexistent", &args(tmp.path().to_str().unwrap()), "{}").unwrap_err();

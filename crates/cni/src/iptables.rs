@@ -113,13 +113,13 @@ mod tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
-    use std::sync::Mutex;
 
     // These tests drive a fake iptables via the process-global $FAKE_LOG env var
     // and exec a freshly-written script. Both are process-wide resources, so the
-    // tests must not run concurrently: a shared env var would cross-contaminate
-    // logs and concurrent exec-after-write can hit ETXTBSY. Serialize them.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    // tests must not run concurrently with each other OR with the delegate exec
+    // tests: a shared env var would cross-contaminate logs and concurrent
+    // exec-after-write can hit ETXTBSY. The crate-wide exec_test_guard serializes
+    // all exec-spawning tests in this crate.
 
     // A fake iptables that records each invocation's args to $FAKE_LOG and
     // exits 0, except `-C` (check) exits 1 so ensure_rule proceeds to `-A`.
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn ensure_rule_checks_then_appends() {
-        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::exec_test_guard();
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("log");
         std::env::set_var("FAKE_LOG", &log);
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn insert_rule_checks_then_inserts_at_top() {
-        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::exec_test_guard();
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("log");
         std::env::set_var("FAKE_LOG", &log);
