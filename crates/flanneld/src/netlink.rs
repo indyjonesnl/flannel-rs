@@ -274,9 +274,14 @@ impl Netlink {
         // LinkLocalAddress (MAC) equals the peer VtepMAC on this dev, then delete
         // it best-effort. Without this a PERMANENT fdb entry leaks on the
         // `nolearning` flannel.1 device on peer removal / VtepMAC change.
-        let mut fdb = self.handle.neighbours().get().execute();
+        // The dump MUST request the bridge family: a default (AF_UNSPEC) RTM_GETNEIGH
+        // returns only the L3 neighbour table, never AF_BRIDGE fdb entries — so the
+        // old fdb entry would never be found and would leak on every VtepMAC change.
+        let mut fdb_req = self.handle.neighbours().get();
+        fdb_req.message_mut().header.family = AddressFamily::Bridge;
+        let mut fdb = fdb_req.execute();
         while let Ok(Some(neigh)) = fdb.try_next().await {
-            if neigh.header.family != AddressFamily::Bridge || neigh.header.ifindex != dev {
+            if neigh.header.ifindex != dev {
                 continue;
             }
             let matches_mac = neigh.attributes.iter().any(|attr| {
