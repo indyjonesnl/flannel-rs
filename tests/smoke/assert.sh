@@ -60,4 +60,13 @@ retry 60 k exec "$CLI_POD" -- curl -sS --max-time 5 "http://$SRV_IP:80/hostname"
 echo "== assert 4: ClusterIP service =="
 retry 90 k exec "$CLI_POD" -- curl -sS --max-time 5 "http://smoke-server:80/hostname"
 
+echo "== assert 5: hostPort (portmap DNAT) =="
+k rollout status deploy/hostport-server --timeout=120s
+HP_POD=$(k get pod -l app=hostport-server -o jsonpath='{.items[0].metadata.name}')
+HP_NODE=$(k get pod "$HP_POD" -o jsonpath='{.spec.nodeName}')
+echo "hostport pod $HP_POD on node $HP_NODE"
+# hostPort 31180 is published on the node the pod runs on; curl it from that node.
+retry 60 docker exec "$HP_NODE" curl -sS --max-time 5 "http://127.0.0.1:31180/hostname"
+echo "OK: hostPort reachable on $HP_NODE"
+
 echo "ALL ASSERTS PASSED"
