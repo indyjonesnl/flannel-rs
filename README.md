@@ -6,6 +6,7 @@ backend, kube-subnet-manager) *and* the per-pod CNI plugin chain.
 [![CI](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/indyjonesnl/flannel-rs?logo=github&label=release)](https://github.com/indyjonesnl/flannel-rs/releases/latest)
 [![sig-network conformance](https://img.shields.io/badge/sig--network%20conformance-47%2F0-brightgreen)](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml)
+[![sig-node conformance](https://img.shields.io/badge/sig--node%20conformance-105%2F0-brightgreen)](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml)
 
 A drop-in replacement for upstream Go [Flannel](https://github.com/flannel-io/flannel).
 It speaks the same node annotations, writes the same `/run/flannel/subnet.env`, and
@@ -59,7 +60,8 @@ The cluster must have a pod CIDR and its default CNI disabled (flannel-rs is the
 ## Status
 
 **Complete for IPv4.** The entire Flannel stack is Rust and gated in CI by smoke parity
-(vs Go flannel) plus the upstream `[sig-network] [Conformance]` suite.
+(vs Go flannel) plus the upstream `[sig-network] [Conformance]` and `[sig-node]
+[Conformance]` suites.
 
 | Crate | Role | Lang |
 | --- | --- | --- |
@@ -80,14 +82,18 @@ every push and PR:
   cross-node TCP/HTTP, ClusterIP service, pod-IP-in-`PodCIDR` + `flannel.1` device/routes,
   and a **hostPort** check (exercises `portmap`). Go baseline is locked green first, then
   flannel-rs must match.
-- **Upstream conformance** — [Hydrophone](https://github.com/kubernetes-sigs/hydrophone)
+- **Upstream sig-network conformance** — [Hydrophone](https://github.com/kubernetes-sigs/hydrophone)
   runs `[sig-network] [Conformance]`: **47 specs, 0 failures, none skipped** — intra-pod &
   node-pod connectivity (http/udp), ClusterIP/NodePort/ExternalName Services, session
   affinity, cluster DNS, Endpoints/EndpointSlices, and HostPort. flannel-rs passes the
   same set as Go flannel.
+- **Upstream sig-node conformance** — Hydrophone runs `[sig-node] [Conformance]`: **105
+  specs, 0 failures, none skipped** — pod lifecycle, liveness/readiness/startup probes,
+  init & ephemeral containers, Secret/ConfigMap env, downward API, and runtime handling.
+  Proves the Rust CNI swap doesn't regress kubelet/runtime pod handling.
 
 CI jobs: `fmt + clippy + test` → `smoke (flannel-go)`, `smoke (flannel-rs)`,
-`sig-network conformance (flannel-rs)`.
+`sig-network conformance (flannel-rs)`, `sig-node conformance (flannel-rs)`.
 
 > Note: same-node pod→Service traffic only traverses iptables when `br_netfilter` is
 > loaded (`net.bridge.bridge-nf-call-iptables=1`). The harness ensures it on each node.
@@ -102,7 +108,8 @@ docker build -t flannel-rs:dev .          # build the dev image
 
 bash tests/smoke/run.sh flannel-go        # baseline (upstream Go flannel)
 bash tests/smoke/run.sh flannel-rs        # parity check (all-Rust chain)
-bash tests/conformance/run.sh flannel-rs  # sig-network conformance
+bash tests/conformance/run.sh flannel-rs sig-network  # sig-network conformance
+bash tests/conformance/run.sh flannel-rs sig-node     # sig-node conformance
 ```
 
 Each script creates a 3-node kind cluster, installs the CNI, runs its checks, and tears
@@ -120,6 +127,7 @@ Release, and pushes the multi-arch image to GHCR. `workflow_dispatch` with
 
 Done: VXLAN backend · kube-subnet-manager · ip-masq · real MTU · bootstrap backoff ·
 minimal RBAC · **all four CNI plugins in Rust** · smoke parity · sig-network conformance ·
+sig-node conformance ·
 multi-arch image + binary releases.
 
 Next / not yet:
@@ -154,7 +162,7 @@ crates/flanneld/      the daemon (Rust)
 crates/cni/           shared CNI library
 crates/cni-*/         the Rust CNI plugins (flannel, bridge, host-local, portmap)
 deploy/               kind config; flannel-go (baseline), flannel-rs (:dev), flannel-rs-release (GHCR)
-tests/                smoke harness, sig-network conformance, shared cluster lib
+tests/                smoke harness, sig-network + sig-node conformance, shared cluster lib
 .github/workflows/    ci.yml (test+smoke+conformance), release.yml (binaries+image)
 docs/                 design specs + implementation plans
 ```
