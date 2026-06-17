@@ -7,9 +7,12 @@ ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends iproute2 iptables ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY dist/${TARGETARCH}/flanneld   /usr/local/bin/flanneld
-COPY dist/${TARGETARCH}/flannel    /opt/cni/bin/flannel
-COPY dist/${TARGETARCH}/bridge     /opt/cni/bin/bridge
-COPY dist/${TARGETARCH}/host-local /opt/cni/bin/host-local
-COPY dist/${TARGETARCH}/portmap    /opt/cni/bin/portmap
+# --chmod=0755: actions/upload-artifact strips the execute bit (binaries arrive
+# here as 0644 after the artifact round-trip), and plain COPY preserves source
+# mode. Without it the container can't exec flanneld / the CNI plugins.
+COPY --chmod=0755 dist/${TARGETARCH}/flanneld   /usr/local/bin/flanneld
+COPY --chmod=0755 dist/${TARGETARCH}/flannel    /opt/cni/bin/flannel
+COPY --chmod=0755 dist/${TARGETARCH}/bridge     /opt/cni/bin/bridge
+COPY --chmod=0755 dist/${TARGETARCH}/host-local /opt/cni/bin/host-local
+COPY --chmod=0755 dist/${TARGETARCH}/portmap    /opt/cni/bin/portmap
 ENTRYPOINT ["/usr/local/bin/flanneld"]
