@@ -116,3 +116,29 @@ jobs:
 
       - name: Run sig-network conformance (flannel-rs)
         run: bash tests/conformance/run.sh flannel-rs
+
+  reconcile:
+    name: flanneld reconcile (flannel-rs)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+          curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Enable bridge netfilter
+        run: |
+          sudo modprobe br_netfilter
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+
+      - name: Build flannel-rs image
+        run: docker build -t flannel-rs:dev .
+
+      - name: Run reconcile scenario (flannel-rs)
+        run: bash tests/smoke/reconcile.sh flannel-rs
