@@ -3,7 +3,9 @@
 Flannel, reimplemented in Rust — the **whole stack**: the `flanneld` daemon (VXLAN
 backend, kube-subnet-manager) *and* the per-pod CNI plugin chain.
 
-![CI](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/indyjonesnl/flannel-rs?logo=github&label=release)](https://github.com/indyjonesnl/flannel-rs/releases/latest)
+[![sig-network conformance](https://img.shields.io/badge/sig--network%20conformance-47%2F0-brightgreen)](https://github.com/indyjonesnl/flannel-rs/actions/workflows/ci.yml)
 
 A drop-in replacement for upstream Go [Flannel](https://github.com/flannel-io/flannel).
 It speaks the same node annotations, writes the same `/run/flannel/subnet.env`, and
