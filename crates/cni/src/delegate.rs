@@ -68,7 +68,6 @@ fn find_in_path(name: &str, cni_path: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::os::unix::fs::PermissionsExt;
 
     fn args(path: &str) -> CniArgs {
         let m: HashMap<String, String> = [
@@ -85,6 +84,7 @@ mod tests {
 
     fn write_script(dir: &Path, name: &str, body: &str) {
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let p = dir.join(name);
         // Create executable + fully close the write fd before any exec, or a
         // concurrent test can hit ETXTBSY ("Text file busy") execing it.
