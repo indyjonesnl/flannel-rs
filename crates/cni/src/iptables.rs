@@ -73,6 +73,27 @@ impl Iptables {
         }
     }
 
+    /// Insert a rule at the TOP of a nat chain if not already present (`-C` then
+    /// `-I <chain> 1`). Use this when the rule must take precedence over rules a
+    /// peer component (e.g. flannel's masquerade/RETURN rules, kube-proxy)
+    /// appends to a built-in chain like POSTROUTING.
+    pub fn insert_rule(&self, chain: &str, rule: &[&str]) -> Result<(), CniError> {
+        let mut check = vec!["-t", "nat", "-C", chain];
+        check.extend_from_slice(rule);
+        if self.run(&check)?.status.success() {
+            return Ok(());
+        }
+        let mut ins = vec!["-t", "nat", "-I", chain, "1"];
+        ins.extend_from_slice(rule);
+        let out = self.run(&ins)?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(CniError::new(7, format!("insert rule into {chain}"))
+                .with_details(String::from_utf8_lossy(&out.stderr).to_string()))
+        }
+    }
+
     /// Delete a rule (best-effort; missing is fine).
     pub fn delete_rule(&self, chain: &str, rule: &[&str]) {
         let mut del = vec!["-t", "nat", "-D", chain];
@@ -92,6 +113,13 @@ mod tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
+    use std::sync::Mutex;
+
+    // These tests drive a fake iptables via the process-global $FAKE_LOG env var
+    // and exec a freshly-written script. Both are process-wide resources, so the
+    // tests must not run concurrently: a shared env var would cross-contaminate
+    // logs and concurrent exec-after-write can hit ETXTBSY. Serialize them.
+    static SERIAL: Mutex<()> = Mutex::new(());
 
     // A fake iptables that records each invocation's args to $FAKE_LOG and
     // exits 0, except `-C` (check) exits 1 so ensure_rule proceeds to `-A`.
@@ -119,6 +147,7 @@ mod tests {
 
     #[test]
     fn ensure_rule_checks_then_appends() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("log");
         std::env::set_var("FAKE_LOG", &log);
@@ -132,6 +161,29 @@ mod tests {
         );
         assert!(
             recorded.contains("-A CNI-HOSTPORT-DNAT -j CNI-DN-abc"),
+            "{recorded}"
+        );
+        std::env::remove_var("FAKE_LOG");
+    }
+
+    #[test]
+    fn insert_rule_checks_then_inserts_at_top() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("log");
+        std::env::set_var("FAKE_LOG", &log);
+        let ipt = Iptables::with_backend(fake_iptables(tmp.path()));
+        ipt.insert_rule("POSTROUTING", &["-j", "CNI-HOSTPORT-MASQ"])
+            .unwrap();
+        let recorded = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            recorded.contains("-C POSTROUTING -j CNI-HOSTPORT-MASQ"),
+            "{recorded}"
+        );
+        // Must insert at index 1 (top), not append, so it precedes flannel's
+        // masquerade/RETURN rules.
+        assert!(
+            recorded.contains("-I POSTROUTING 1 -j CNI-HOSTPORT-MASQ"),
             "{recorded}"
         );
         std::env::remove_var("FAKE_LOG");
