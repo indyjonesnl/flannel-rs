@@ -155,6 +155,44 @@ jobs:
       - name: Run sig-node conformance (flannel-rs)
         run: bash tests/conformance/run.sh flannel-rs sig-node
 
+  conformance-extra:
+    name: sig-network extra (MTU + ip-masq) (flannel-rs)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+          curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Install hydrophone
+        env:
+          HYDROPHONE_VERSION: "0.7.0"
+          HYDROPHONE_SHA256: "15a6c09962f9bd4a1587af068b5edef1072327a77012d8fbb84992c7c87c0475"
+        run: |
+          tgz="hydrophone_Linux_x86_64.tar.gz"
+          curl -fsSLo "$tgz" \
+            "https://github.com/kubernetes-sigs/hydrophone/releases/download/v${HYDROPHONE_VERSION}/${tgz}"
+          echo "${HYDROPHONE_SHA256}  ${tgz}" | sha256sum -c -
+          tar -xzf "$tgz" hydrophone
+          chmod +x hydrophone && sudo mv hydrophone /usr/local/bin/hydrophone
+
+      - name: Enable bridge netfilter
+        run: |
+          sudo modprobe br_netfilter
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+
+      - name: Build flannel-rs image
+        run: docker build -t flannel-rs:dev .
+
+      - name: Run sig-network extra (MTU + ip-masq) (flannel-rs)
+        run: bash tests/conformance/run.sh flannel-rs sig-network-extra
+
   reconcile:
     name: flanneld reconcile (flannel-rs)
     needs: test
