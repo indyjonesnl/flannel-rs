@@ -46,5 +46,10 @@ kubectl --context "$CTX" rollout status deploy/smoke-client --timeout=300s
 # variant-agnostic (applies to flannel-go and flannel-rs identically), like the
 # image-pull buffer above.
 kubectl --context "$CTX" -n kube-system rollout status deploy/coredns --timeout=180s
+# Tell the asserts which backend is active (host-gw has no overlay device).
+case "$VARIANT" in
+  flannel-rs-hostgw) export BACKEND=host-gw ;;
+  *) export BACKEND=vxlan ;;
+esac
 bash "$ROOT/tests/smoke/assert.sh"
 echo "SMOKE PASSED: $VARIANT"
