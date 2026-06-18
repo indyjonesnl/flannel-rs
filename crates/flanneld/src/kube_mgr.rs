@@ -51,26 +51,7 @@ impl KubeMgr {
     /// backend-data={"VtepMAC":mac}, public-ip, kube-subnet-manager-managed=true.
     pub async fn publish(&self, public_ip: &str, vtep_mac: &str) -> Result<()> {
         let nodes: Api<Node> = Api::all(self.client.clone());
-        let backend_data = BackendData {
-            vtep_mac: vtep_mac.into(),
-        }
-        .to_json();
-
-        let mut annotations = Map::new();
-        annotations.insert(annotation::key("backend-type"), Value::from("vxlan"));
-        annotations.insert(annotation::key("backend-data"), Value::from(backend_data));
-        annotations.insert(annotation::key("public-ip"), Value::from(public_ip));
-        annotations.insert(
-            annotation::key("kube-subnet-manager-managed"),
-            Value::from("true"),
-        );
-
-        let patch = json!({
-            "apiVersion": "v1",
-            "kind": "Node",
-            "metadata": { "annotations": Value::Object(annotations) }
-        });
-
+        let patch = build_publish_patch(public_ip, vtep_mac);
         nodes
             .patch(
                 &self.node_name,
@@ -106,6 +87,30 @@ impl KubeMgr {
     }
 }
 
+/// Build the server-side-apply patch that publishes this node's flannel lease:
+/// the four `flannel.alpha.coreos.com/*` annotations under a minimal Node object.
+fn build_publish_patch(public_ip: &str, vtep_mac: &str) -> Value {
+    let backend_data = BackendData {
+        vtep_mac: vtep_mac.into(),
+    }
+    .to_json();
+
+    let mut annotations = Map::new();
+    annotations.insert(annotation::key("backend-type"), Value::from("vxlan"));
+    annotations.insert(annotation::key("backend-data"), Value::from(backend_data));
+    annotations.insert(annotation::key("public-ip"), Value::from(public_ip));
+    annotations.insert(
+        annotation::key("kube-subnet-manager-managed"),
+        Value::from("true"),
+    );
+
+    json!({
+        "apiVersion": "v1",
+        "kind": "Node",
+        "metadata": { "annotations": Value::Object(annotations) }
+    })
+}
+
 fn node_to_peer(n: &Node) -> Option<Peer> {
     let ann = n.metadata.annotations.as_ref()?;
     let bd = ann.get(&annotation::key("backend-data"))?;
@@ -118,4 +123,40 @@ fn node_to_peer(n: &Node) -> Option<Peer> {
         public_ip,
         vtep_mac,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publish_patch_sets_four_annotations_and_ssa_shape() {
+        // parity: flannel pkg/subnet/kube — publishes backend-type/backend-data/
+        // public-ip + kube-subnet-manager-managed via server-side apply.
+        let p = build_publish_patch("172.18.0.2", "ae:11:22:33:44:55");
+        assert_eq!(p["apiVersion"].as_str(), Some("v1"));
+        assert_eq!(p["kind"].as_str(), Some("Node"));
+        let ann = &p["metadata"]["annotations"];
+        assert_eq!(
+            ann.get(annotation::key("backend-type").as_str())
+                .and_then(|v| v.as_str()),
+            Some("vxlan")
+        );
+        assert_eq!(
+            ann.get(annotation::key("backend-data").as_str())
+                .and_then(|v| v.as_str()),
+            Some(r#"{"VtepMAC":"ae:11:22:33:44:55"}"#)
+        );
+        assert_eq!(
+            ann.get(annotation::key("public-ip").as_str())
+                .and_then(|v| v.as_str()),
+            Some("172.18.0.2")
+        );
+        assert_eq!(
+            ann.get(annotation::key("kube-subnet-manager-managed").as_str())
+                .and_then(|v| v.as_str()),
+            Some("true")
+        );
+        assert_eq!(ann.as_object().map(|m| m.len()), Some(4));
+    }
 }
