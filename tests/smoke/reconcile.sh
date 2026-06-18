@@ -4,7 +4,10 @@
 # Exercises flanneld's reconcile/del_peer/add_peer path. flannel-rs only.
 set -euo pipefail
 VARIANT="${1:-flannel-rs}"
-[ "$VARIANT" = "flannel-rs" ] || { echo "reconcile test is flannel-rs only"; exit 2; }
+case "$VARIANT" in
+  flannel-rs | flannel-rs-hostgw) ;;
+  *) echo "reconcile test is flannel-rs / flannel-rs-hostgw only"; exit 2 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CTX="kind-flannel-rs"
 k() { kubectl --context "$CTX" "$@"; }
@@ -57,6 +60,37 @@ M=$(k get pod "$CLI_POD" -o jsonpath='{.spec.nodeName}')   # peer that must reco
 SRV_IP=$(k get pod "$SRV_POD" -o jsonpath='{.status.podIP}')
 [ "$N" != "$M" ] || { echo "FAIL: pods co-located"; exit 1; }
 echo "churn node N=$N ; peer M=$M ; server pod ip=$SRV_IP"
+
+if [ "$VARIANT" = "flannel-rs-hostgw" ]; then
+  # host-gw reconvergence: M must hold a direct route to N's pod CIDR via N's
+  # node IP. Drop it and restart M's flanneld; flanneld must re-install it.
+  SRV_CIDR=$(k get node "$N" -o jsonpath='{.spec.podCIDR}')
+  N_IP=$(k get node "$N" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+  echo "host-gw: peer M=$M must route $SRV_CIDR via N($N) IP $N_IP"
+  route_ok() { docker exec "$M" ip route show "$SRV_CIDR" | grep -q "via $N_IP"; }
+
+  echo "== baseline: M has a direct route to N's pod CIDR via N's node IP =="
+  retry 30 route_ok
+  echo "OK: baseline route present"
+
+  echo "== perturb: delete that route on M, then restart M's flanneld =="
+  docker exec "$M" ip route del "$SRV_CIDR" || true
+  ! route_ok || { echo "FAIL: route still present right after delete"; exit 1; }
+  FPOD=$(k -n kube-flannel get pod -l app=flannel --field-selector "spec.nodeName=$M" -o jsonpath='{.items[0].metadata.name}')
+  echo "restarting flanneld pod $FPOD on $M"
+  k -n kube-flannel delete pod "$FPOD"
+  k -n kube-flannel rollout status ds/kube-flannel-ds --timeout=180s
+
+  echo "== assert M reconverged: route to N's pod CIDR via N's node IP is back =="
+  retry 120 route_ok
+  echo "OK: host-gw route reconverged"
+
+  echo "== assert cross-node connectivity preserved =="
+  retry 60 k exec "$CLI_POD" -- curl -sS --max-time 5 "http://$SRV_IP:80/hostname"
+  echo "OK: cross-node connectivity preserved"
+  echo "RECONCILE PASSED: $VARIANT"
+  exit 0
+fi
 
 echo "== baseline: peer M has N's VtepMAC in flannel.1 fdb =="
 OLD_MAC=$(vtep_mac "$N"); echo "OLD_MAC=$OLD_MAC"

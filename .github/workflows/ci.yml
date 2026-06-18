@@ -218,3 +218,6 @@ jobs:
 
       - name: Run reconcile scenario (flannel-rs)
         run: bash tests/smoke/reconcile.sh flannel-rs
+
+      - name: Run reconcile scenario (flannel-rs-hostgw)
+        run: bash tests/smoke/reconcile.sh flannel-rs-hostgw
