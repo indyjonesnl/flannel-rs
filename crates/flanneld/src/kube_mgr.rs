@@ -49,16 +49,9 @@ impl KubeMgr {
         Ok(())
     }
 
-    /// Build desired peer map (node name -> Peer) for all nodes except self that
-    /// have complete annotations (backend-data + public-ip) and a podCIDR. Nodes
-    /// with missing data are skipped.
-    pub async fn desired_peers(&self) -> Result<HashMap<String, Peer>> {
-        let nodes: Api<Node> = Api::all(self.client.clone());
-        let list = nodes
-            .list(&Default::default())
-            .await
-            .context("list nodes")?;
-        Ok(desired_from_nodes(&list.items, &self.node_name))
+    /// Clone of the kube client, for callers that build their own watches.
+    pub fn client(&self) -> Client {
+        self.client.clone()
     }
 }
 
