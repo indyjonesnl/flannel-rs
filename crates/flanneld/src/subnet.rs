@@ -1,3 +1,11 @@
+use ipnetwork::Ipv4Network;
+
+/// True if `subnet` lies entirely within `network` (both IPv4 CIDRs): both its
+/// network and broadcast addresses are inside `network`.
+pub fn subnet_in_network(subnet: Ipv4Network, network: Ipv4Network) -> bool {
+    network.contains(subnet.network()) && network.contains(subnet.broadcast())
+}
+
 /// Inputs needed to render /run/flannel/subnet.env.
 pub struct SubnetEnv {
     pub network: String, // cluster CIDR, e.g. 10.244.0.0/16
@@ -46,5 +54,36 @@ mod tests {
     #[test]
     fn vxlan_mtu_saturates_without_underflow() {
         assert_eq!(vxlan_mtu(40), 0);
+    }
+
+    // parity: flannel pkg/ip ipnet_test.go (IP4Net.Contains intent) — the node
+    // lease (FLANNEL_SUBNET) must sit inside the cluster CIDR (FLANNEL_NETWORK).
+    #[test]
+    fn subnet_within_network_is_contained() {
+        let net: ipnetwork::Ipv4Network = "10.244.0.0/16".parse().unwrap();
+        let sub: ipnetwork::Ipv4Network = "10.244.1.0/24".parse().unwrap();
+        assert!(subnet_in_network(sub, net));
+    }
+
+    #[test]
+    fn subnet_outside_network_is_not_contained() {
+        let net: ipnetwork::Ipv4Network = "10.244.0.0/16".parse().unwrap();
+        let sub: ipnetwork::Ipv4Network = "10.245.1.0/24".parse().unwrap();
+        assert!(!subnet_in_network(sub, net));
+    }
+
+    #[test]
+    fn supernet_is_not_contained_in_subnet() {
+        // A /16 cannot fit inside a /24 — its broadcast falls outside.
+        let small: ipnetwork::Ipv4Network = "10.244.1.0/24".parse().unwrap();
+        let big: ipnetwork::Ipv4Network = "10.244.0.0/16".parse().unwrap();
+        assert!(!subnet_in_network(big, small));
+    }
+
+    #[test]
+    fn equal_network_is_contained() {
+        // "entirely within" is inclusive: a CIDR contains itself.
+        let n: ipnetwork::Ipv4Network = "10.244.0.0/16".parse().unwrap();
+        assert!(subnet_in_network(n, n));
     }
 }

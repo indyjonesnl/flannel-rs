@@ -68,6 +68,14 @@ async fn try_bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
     let own = mgr.own_node().await?; // node-not-found / no-PodCIDR -> transient
     let local: Ipv4Addr = own.public_ip.parse().context("parse node IP")?;
     let cidr: Ipv4Network = own.pod_cidr.parse().context("parse own PodCIDR")?;
+    // Sanity check (parity: flannel verifies the lease sits within the network).
+    // Non-fatal: kube assigns the PodCIDR, so just surface a misconfiguration.
+    if let Ok(net) = nc.network.parse::<Ipv4Network>() {
+        if !crate::subnet::subnet_in_network(cidr, net) {
+            warn!(subnet = %own.pod_cidr, network = %nc.network,
+                  "node PodCIDR is not within the flannel Network");
+        }
+    }
     let gateway = cidr.network();
 
     let link_mtu = nl.link_mtu_by_ip(local).await.unwrap_or_else(|e| {
@@ -236,7 +244,7 @@ mod tests {
 
     #[test]
     fn classify_rejects_non_vxlan_backend() {
-        let raw = r#"{"Network":"x","Backend":{"Type":"host-gw"}}"#;
+        let raw = r#"{"Network":"10.244.0.0/16","Backend":{"Type":"host-gw"}}"#;
         let err = classify_net_conf(raw).unwrap_err();
         match err {
             Fatal::Backend(kind) => assert_eq!(kind, "host-gw"),

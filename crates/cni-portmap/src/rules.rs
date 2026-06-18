@@ -276,4 +276,73 @@ mod tests {
             ]
         );
     }
+
+    // parity: containernetworking portmap — hairpin rule with an explicit hostIP
+    // must include the `-d <hostIP>/32` match (the host_ip branch of
+    // hairpin_mark_args, otherwise untested).
+    #[test]
+    fn hairpin_mark_args_match_host_ip_when_set() {
+        let m = PortMapping {
+            host_port: 31180,
+            container_port: 80,
+            protocol: "tcp".into(),
+            host_ip: Some("127.0.0.2".into()),
+        };
+        let a = hairpin_mark_args(&m, "10.244.1.5".parse().unwrap());
+        assert_eq!(
+            a,
+            vec![
+                "-p",
+                "tcp",
+                "-s",
+                "10.244.1.5/32",
+                "-d",
+                "127.0.0.2/32",
+                "--dport",
+                "31180",
+                "-j",
+                SETMARK_CHAIN,
+            ]
+        );
+    }
+
+    // An empty HostIP must NOT add a `-d` match to the hairpin rule either
+    // (mirrors dnat_args_ignore_empty_host_ip; guards the host_ip_some() branch).
+    #[test]
+    fn hairpin_mark_args_ignore_empty_host_ip() {
+        let m = PortMapping {
+            host_port: 31180,
+            container_port: 80,
+            protocol: "tcp".into(),
+            host_ip: Some(String::new()),
+        };
+        let a = hairpin_mark_args(&m, "10.244.1.5".parse().unwrap());
+        assert!(!a.iter().any(|s| s == "-d"), "empty hostIP must not add -d");
+    }
+
+    // parity: containernetworking portmap — the localhost mark rule honours the
+    // mapping protocol (udp here), not just tcp.
+    #[test]
+    fn localhost_mark_args_udp() {
+        let m = PortMapping {
+            host_port: 31180,
+            container_port: 80,
+            protocol: "udp".into(),
+            host_ip: None,
+        };
+        let a = localhost_mark_args(&m);
+        assert_eq!(
+            a,
+            vec![
+                "-p",
+                "udp",
+                "-s",
+                "127.0.0.1/32",
+                "--dport",
+                "31180",
+                "-j",
+                SETMARK_CHAIN,
+            ]
+        );
+    }
 }
