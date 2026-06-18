@@ -61,7 +61,7 @@ The cluster must have a pod CIDR and its default CNI disabled (flannel-rs is the
 
 **Complete for IPv4.** The entire Flannel stack is Rust and gated in CI by smoke parity
 (vs Go flannel) plus the upstream `[sig-network] [Conformance]` and `[sig-node]
-[Conformance]` suites.
+[Conformance]` suites, and a curated `[sig-network]` slice (overlay MTU + ip-masq).
 
 | Crate | Role | Lang |
 | --- | --- | --- |
@@ -91,9 +91,16 @@ every push and PR:
   specs, 0 failures, none skipped** — pod lifecycle, liveness/readiness/startup probes,
   init & ephemeral containers, Secret/ConfigMap env, downward API, and runtime handling.
   Proves the Rust CNI swap doesn't regress kubelet/runtime pod handling.
+- **sig-network extra (MTU + ip-masq)** — Hydrophone runs the non-`[Conformance]`
+  `[sig-network]` specs that the conformance subset under-tests: **4 specs, 0 failures** —
+  "large requests: http/udp" (large payloads over the VXLAN overlay → exercises the
+  computed `subnet.env` MTU) and "Internet connection for containers"
+  (`Feature:Networking-IPv4`/`-DNS` → exercises `flanneld`'s ip-masq MASQUERADE on pod
+  egress to off-cluster destinations).
 
 CI jobs: `fmt + clippy + test` → `smoke (flannel-go)`, `smoke (flannel-rs)`,
-`sig-network conformance (flannel-rs)`, `sig-node conformance (flannel-rs)`.
+`sig-network conformance (flannel-rs)`, `sig-node conformance (flannel-rs)`,
+`sig-network extra (MTU + ip-masq) (flannel-rs)`.
 
 > Note: same-node pod→Service traffic only traverses iptables when `br_netfilter` is
 > loaded (`net.bridge.bridge-nf-call-iptables=1`). The harness ensures it on each node.
@@ -108,8 +115,9 @@ docker build -t flannel-rs:dev .          # build the dev image
 
 bash tests/smoke/run.sh flannel-go        # baseline (upstream Go flannel)
 bash tests/smoke/run.sh flannel-rs        # parity check (all-Rust chain)
-bash tests/conformance/run.sh flannel-rs sig-network  # sig-network conformance
-bash tests/conformance/run.sh flannel-rs sig-node     # sig-node conformance
+bash tests/conformance/run.sh flannel-rs sig-network        # sig-network conformance
+bash tests/conformance/run.sh flannel-rs sig-node           # sig-node conformance
+bash tests/conformance/run.sh flannel-rs sig-network-extra  # MTU + ip-masq
 ```
 
 Each script creates a 3-node kind cluster, installs the CNI, runs its checks, and tears

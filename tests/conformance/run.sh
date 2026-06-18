@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VARIANT="${1:?usage: run.sh <flannel-go|flannel-rs> [sig-network|sig-node]}"
+VARIANT="${1:?usage: run.sh <flannel-go|flannel-rs> [sig-network|sig-node|sig-network-extra]}"
 SUITE="${2:-sig-network}"
 
 # Shared kind cluster bring-up (create + CNI bridge + bridge netfilter + load
@@ -15,7 +15,9 @@ CONFORMANCE_IMAGE="registry.k8s.io/conformance:v1.35.0"
 # Focus/skip per suite. Each suite gates a distinct slice of the upstream
 # conformance set. Skips are regex (alternated); each entry MUST carry a
 # one-line justification. Keep skip lists minimal so coverage is not silently
-# reduced.
+# reduced. SUITE_PARALLEL is the per-suite default ginkgo parallelism (overridable
+# via CONFORMANCE_PARALLEL).
+SUITE_PARALLEL=2
 case "$SUITE" in
   sig-network)
     # All networking conformance tests: pod-to-pod connectivity, Services,
@@ -32,8 +34,23 @@ case "$SUITE" in
     FOCUS='\[sig-node\].*\[Conformance\]'
     SKIP=""
     ;;
+  sig-network-extra)
+    # Non-Conformance sig-network specs that exercise two flannel-rs behaviours
+    # the [Conformance] subset under-tests:
+    #   - "large requests: http/udp" -> VXLAN overlay MTU (large payloads must
+    #     not blackhole),
+    #   - "Internet connection for containers" (Feature:Networking-IPv4/DNS) ->
+    #     ip-masq MASQUERADE on pod egress to off-cluster destinations.
+    FOCUS='large requests: (http|udp)|Internet connection for containers'
+    # IPv6/dual-stack: flannel-rs is IPv4-only. Windows: linux-only cluster.
+    SKIP='IPv6|IPv6DualStack|Networking-IPv6|sig-windows|Secondary IP Family'
+    # The "large requests: http" spec calls SkipUnlessNodeCountIsAtLeast(2),
+    # whose node count races to -1 (-> spurious skip) under parallel procs on
+    # this small set. Run serially; it's only ~4 specs (~30s).
+    SUITE_PARALLEL=1
+    ;;
   *)
-    echo "unknown suite: $SUITE (want sig-network|sig-node)" >&2
+    echo "unknown suite: $SUITE (want sig-network|sig-node|sig-network-extra)" >&2
     exit 2
     ;;
 esac
@@ -72,9 +89,10 @@ kubectl --context "$CTX" -n kube-system rollout status deploy/coredns --timeout=
 
 kind get kubeconfig --name "$CLUSTER_NAME" > "$KCFG"
 
-# Parallelism: runner has 2 CPU; default to 2. Ginkgo/hydrophone runs [Serial]
-# tests after the parallel phase, so this is safe.
-PARALLEL="${CONFORMANCE_PARALLEL:-2}"
+# Parallelism: runner has 2 CPU. Per-suite default (SUITE_PARALLEL), overridable
+# via CONFORMANCE_PARALLEL. Ginkgo/hydrophone runs [Serial] tests after the
+# parallel phase, so this is safe.
+PARALLEL="${CONFORMANCE_PARALLEL:-$SUITE_PARALLEL}"
 
 echo "Running hydrophone: image=$CONFORMANCE_IMAGE focus=$FOCUS parallel=$PARALLEL skip='${SKIP}'"
 
