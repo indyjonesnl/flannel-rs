@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use ipnetwork::Ipv4Network;
 use k8s_openapi::api::core::v1::Node;
-use kube::runtime::{reflector, watcher};
+use kube::runtime::{reflector, watcher, WatchStreamExt};
 use kube::Api;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -240,7 +240,13 @@ async fn main() -> Result<()> {
     // near-instantly; the watcher relists on desync with its own backoff.
     let api: Api<Node> = Api::all(mgr.client());
     let (store, writer) = reflector::store::<Node>();
-    let mut stream = reflector(writer, watcher(api, watcher::Config::default())).boxed();
+    // default_backoff: on a watch error (e.g. transient apiserver hiccup) back off
+    // per client-go conventions instead of hot-looping the select! arm.
+    let mut stream = reflector(
+        writer,
+        watcher(api, watcher::Config::default()).default_backoff(),
+    )
+    .boxed();
 
     // Safety-net peer resync (also retries failed netlink ops) and ip-masq
     // re-assertion run on independent timers. interval() fires immediately on the
