@@ -28,6 +28,11 @@ pub fn vxlan_mtu(link_mtu: u32) -> u32 {
     link_mtu.saturating_sub(50)
 }
 
+/// host-gw routes directly with no encapsulation, so pods get the full link MTU.
+pub fn host_gw_mtu(link_mtu: u32) -> u32 {
+    link_mtu
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,6 +49,14 @@ mod tests {
             e.render(),
             "FLANNEL_NETWORK=10.244.0.0/16\nFLANNEL_SUBNET=10.244.1.0/24\nFLANNEL_MTU=1450\nFLANNEL_IPMASQ=true\n"
         );
+    }
+
+    // parity: upstream host-gw advertises the full extIface MTU (no overhead).
+    #[test]
+    fn host_gw_mtu_is_full_link_mtu() {
+        assert_eq!(host_gw_mtu(1500), 1500);
+        assert_eq!(host_gw_mtu(9000), 9000);
+        assert_eq!(host_gw_mtu(1450), vxlan_mtu(1500));
     }
 
     #[test]

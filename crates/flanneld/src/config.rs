@@ -14,6 +14,24 @@ pub struct Backend {
     pub kind: String,
 }
 
+/// The flannel backend selected by `Backend.Type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendType {
+    Vxlan,
+    HostGw,
+}
+
+impl BackendType {
+    /// Parse the `Backend.Type` string; unknown types are rejected (None).
+    pub fn parse(kind: &str) -> Option<Self> {
+        match kind {
+            "vxlan" => Some(BackendType::Vxlan),
+            "host-gw" => Some(BackendType::HostGw),
+            _ => None,
+        }
+    }
+}
+
 impl NetConf {
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         let nc: Self = serde_json::from_str(s)?;
@@ -52,6 +70,14 @@ mod tests {
     fn rejects_missing_backend_or_type() {
         assert!(NetConf::parse(r#"{"Network":"10.244.0.0/16"}"#).is_err());
         assert!(NetConf::parse(r#"{"Network":"10.244.0.0/16","Backend":{}}"#).is_err());
+    }
+
+    #[test]
+    fn backend_type_parses_known_rejects_unknown() {
+        assert_eq!(BackendType::parse("vxlan"), Some(BackendType::Vxlan));
+        assert_eq!(BackendType::parse("host-gw"), Some(BackendType::HostGw));
+        assert_eq!(BackendType::parse("udp"), None);
+        assert_eq!(BackendType::parse(""), None);
     }
 
     // Divergence test: flannel's SubnetLen/SubnetMin/SubnetMax drive its etcd-mode

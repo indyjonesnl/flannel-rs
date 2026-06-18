@@ -6,11 +6,11 @@ mod netlink;
 mod peer;
 mod subnet;
 
-use crate::config::NetConf;
+use crate::config::{BackendType, NetConf};
 use crate::kube_mgr::KubeMgr;
 use crate::netlink::Netlink;
 use crate::peer::{reconcile, Action};
-use crate::subnet::{vxlan_mtu, SubnetEnv};
+use crate::subnet::{host_gw_mtu, vxlan_mtu, SubnetEnv};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use ipnetwork::Ipv4Network;
@@ -34,28 +34,31 @@ const NET_CONF_PATH: &str = "/etc/kube-flannel/net-conf.json";
 enum Fatal {
     #[error("malformed net-conf.json: {0}")]
     NetConf(String),
-    #[error("unsupported backend {0:?}; only vxlan is supported")]
+    #[error("unsupported backend {0:?}; only vxlan and host-gw are supported")]
     Backend(String),
 }
 
 /// State assembled by a successful bootstrap that the reconcile loop needs.
 struct BootstrapState {
+    /// Output interface for peer routes: the `flannel.1` index (vxlan) or the
+    /// host NIC index (host-gw).
     dev_idx: u32,
+    /// The selected backend (determines the per-peer netlink action).
+    backend: BackendType,
     /// FLANNEL_NETWORK: the cluster-wide pod CIDR.
     network: String,
     /// FLANNEL_SUBNET: this node's pod CIDR.
     subnet: String,
 }
 
-/// Parse + validate net-conf.json. A parse failure or a non-vxlan backend are
+/// Parse + validate net-conf.json. A parse failure or an unsupported backend are
 /// fatal; everything else (fetching the raw string) is handled by the caller as
 /// transient. Pure so it can be unit-tested without a cluster.
-fn classify_net_conf(raw: &str) -> Result<NetConf, Fatal> {
+fn classify_net_conf(raw: &str) -> Result<(NetConf, BackendType), Fatal> {
     let nc = NetConf::parse(raw).map_err(|e| Fatal::NetConf(e.to_string()))?;
-    if nc.backend.kind != "vxlan" {
-        return Err(Fatal::Backend(nc.backend.kind));
-    }
-    Ok(nc)
+    let backend = BackendType::parse(&nc.backend.kind)
+        .ok_or_else(|| Fatal::Backend(nc.backend.kind.clone()))?;
+    Ok((nc, backend))
 }
 
 /// One full bootstrap attempt. Transient failures are returned as plain anyhow
@@ -67,7 +70,7 @@ async fn try_bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
     let raw = tokio::fs::read_to_string(NET_CONF_PATH)
         .await
         .context("read /etc/kube-flannel/net-conf.json")?;
-    let nc = classify_net_conf(&raw)?; // Fatal -> bails, downcasts in bootstrap()
+    let (nc, backend) = classify_net_conf(&raw)?; // Fatal -> bails, downcasts in bootstrap()
 
     let own = mgr.own_node().await?; // node-not-found / no-PodCIDR -> transient
     let local: Ipv4Addr = own.public_ip.parse().context("parse node IP")?;
@@ -86,19 +89,38 @@ async fn try_bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
         warn!(?e, "could not read underlay MTU; defaulting to 1500");
         1500
     });
-    let overlay_mtu = vxlan_mtu(link_mtu);
-    info!(link_mtu, overlay_mtu, "underlay/overlay MTU selected");
+    // MTU is backend-specific: vxlan subtracts overlay overhead; host-gw routes
+    // directly, so pods get the full link MTU.
+    let mtu = match backend {
+        BackendType::Vxlan => vxlan_mtu(link_mtu),
+        BackendType::HostGw => host_gw_mtu(link_mtu),
+    };
+    info!(link_mtu, mtu, ?backend, "MTU selected");
 
-    let (mac, dev_idx) = nl
-        .ensure_vxlan(DEV, VNI, DSTPORT, local, gateway, overlay_mtu)
-        .await?;
-    info!(%mac, dev_idx, "vxlan device ready");
-    mgr.publish(&own.public_ip, &mac).await?;
+    // Per-backend setup: vxlan creates the overlay device and publishes its
+    // VtepMAC; host-gw creates no device, routes via the host NIC, and publishes
+    // no backend-data. Both yield the output-interface index for peer routes.
+    let dev_idx = match backend {
+        BackendType::Vxlan => {
+            let (mac, idx) = nl
+                .ensure_vxlan(DEV, VNI, DSTPORT, local, gateway, mtu)
+                .await?;
+            info!(%mac, idx, "vxlan device ready");
+            mgr.publish(backend, &own.public_ip, Some(&mac)).await?;
+            idx
+        }
+        BackendType::HostGw => {
+            let oif = nl.link_index_by_ip(local).await?;
+            info!(oif, "host-gw: peer routes via host NIC");
+            mgr.publish(backend, &own.public_ip, None).await?;
+            oif
+        }
+    };
 
     let env = SubnetEnv {
         network: nc.network.clone(),
         subnet: own.pod_cidr.clone(),
-        mtu: overlay_mtu,
+        mtu,
         ipmasq: true,
     };
     tokio::fs::create_dir_all("/run/flannel").await.ok();
@@ -109,6 +131,7 @@ async fn try_bootstrap(mgr: &KubeMgr, nl: &Netlink) -> Result<BootstrapState> {
 
     Ok(BootstrapState {
         dev_idx,
+        backend,
         network: nc.network.clone(),
         subnet: own.pod_cidr.clone(),
     })
@@ -146,35 +169,51 @@ async fn reconcile_from_store(
     self_name: &str,
     nl: &Netlink,
     dev_idx: u32,
+    backend: BackendType,
     installed: &mut HashMap<String, crate::peer::Peer>,
 ) {
     let nodes: Vec<Node> = store.state().iter().map(|a| (**a).clone()).collect();
-    let desired = crate::kube_mgr::desired_from_nodes(&nodes, self_name);
+    let desired = crate::kube_mgr::desired_from_nodes(&nodes, self_name, backend);
     let mut next = installed.clone();
     for action in reconcile(installed, &desired) {
         match action {
             Action::Add(p) => {
-                let r1 = nl.add_route(dev_idx, &p).await;
-                let r2 = nl.add_peer_l2(dev_idx, &p).await;
-                match (r1, r2) {
-                    (Ok(()), Ok(())) => {
-                        info!(node = %p.node, cidr = %p.pod_cidr, "peer added");
-                        next.insert(p.node.clone(), p);
-                    }
-                    (a, b) => {
-                        if let Err(e) = a {
+                let added = match backend {
+                    // vxlan: pod-CIDR route via VTEP on flannel.1 + fdb/neigh.
+                    BackendType::Vxlan => {
+                        let r1 = nl.add_route(dev_idx, &p).await;
+                        let r2 = nl.add_peer_l2(dev_idx, &p).await;
+                        if let Err(e) = &r1 {
                             warn!(?e, node = %p.node, "add_route failed; will retry");
                         }
-                        if let Err(e) = b {
+                        if let Err(e) = &r2 {
                             warn!(?e, node = %p.node, "add_peer_l2 failed; will retry");
                         }
-                        next.remove(&p.node);
+                        r1.is_ok() && r2.is_ok()
                     }
+                    // host-gw: direct route to pod CIDR via the peer node IP.
+                    BackendType::HostGw => match nl.add_host_gw_route(dev_idx, &p).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            warn!(?e, node = %p.node, "add_host_gw_route failed; will retry");
+                            false
+                        }
+                    },
+                };
+                if added {
+                    info!(node = %p.node, cidr = %p.pod_cidr, ?backend, "peer added");
+                    next.insert(p.node.clone(), p);
+                } else {
+                    next.remove(&p.node); // re-attempt next event/resync
                 }
             }
             Action::Remove(p) => {
-                if let Err(e) = nl.del_peer(dev_idx, &p).await {
-                    warn!(?e, node = %p.node, "del_peer");
+                let r = match backend {
+                    BackendType::Vxlan => nl.del_peer(dev_idx, &p).await,
+                    BackendType::HostGw => nl.del_host_gw_route(dev_idx, &p).await,
+                };
+                if let Err(e) = r {
+                    warn!(?e, node = %p.node, "peer remove failed");
                 }
                 next.remove(&p.node);
                 info!(node = %p.node, "peer removed");
@@ -206,6 +245,7 @@ async fn main() -> Result<()> {
 
     let BootstrapState {
         dev_idx,
+        backend,
         network,
         subnet,
     } = bootstrap(&mgr, &nl).await?;
@@ -260,13 +300,13 @@ async fn main() -> Result<()> {
         tokio::select! {
             ev = stream.next() => match ev {
                 Some(Ok(_)) => {
-                    reconcile_from_store(&store, &node_name, &nl, dev_idx, &mut installed).await;
+                    reconcile_from_store(&store, &node_name, &nl, dev_idx, backend, &mut installed).await;
                 }
                 Some(Err(e)) => warn!(?e, "node watch error; watcher will resync"),
                 None => return Err(anyhow::anyhow!("node watch stream ended unexpectedly")),
             },
             _ = peer_resync.tick() => {
-                reconcile_from_store(&store, &node_name, &nl, dev_idx, &mut installed).await;
+                reconcile_from_store(&store, &node_name, &nl, dev_idx, backend, &mut installed).await;
             }
             _ = masq_tick.tick() => {
                 if let Some(m) = &masq {
@@ -290,11 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_rejects_non_vxlan_backend() {
-        let raw = r#"{"Network":"10.244.0.0/16","Backend":{"Type":"host-gw"}}"#;
+    fn classify_rejects_unknown_backend() {
+        let raw = r#"{"Network":"10.244.0.0/16","Backend":{"Type":"udp"}}"#;
         let err = classify_net_conf(raw).unwrap_err();
         match err {
-            Fatal::Backend(kind) => assert_eq!(kind, "host-gw"),
+            Fatal::Backend(kind) => assert_eq!(kind, "udp"),
             other => panic!("expected Backend, got {other:?}"),
         }
     }
@@ -313,8 +353,16 @@ mod tests {
     #[test]
     fn classify_accepts_vxlan() {
         let raw = r#"{"Network":"10.244.0.0/16","Backend":{"Type":"vxlan"}}"#;
-        let nc = classify_net_conf(raw).unwrap();
+        let (nc, backend) = classify_net_conf(raw).unwrap();
         assert_eq!(nc.network, "10.244.0.0/16");
-        assert_eq!(nc.backend.kind, "vxlan");
+        assert_eq!(backend, BackendType::Vxlan);
+    }
+
+    #[test]
+    fn classify_accepts_host_gw() {
+        let raw = r#"{"Network":"10.244.0.0/16","Backend":{"Type":"host-gw"}}"#;
+        let (nc, backend) = classify_net_conf(raw).unwrap();
+        assert_eq!(nc.network, "10.244.0.0/16");
+        assert_eq!(backend, BackendType::HostGw);
     }
 }
