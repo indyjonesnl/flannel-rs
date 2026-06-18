@@ -126,4 +126,33 @@ mod tests {
         // default gateway, which is itself .1).
         assert_eq!(chosen, ip("10.244.1.1"));
     }
+
+    // flannel-rs policy (divergence from containernetworking host-local, which
+    // allocates both /31 addresses per RFC 3021): flannel pod CIDRs are always a
+    // /24, so this allocator excludes network+broadcast and treats degenerate
+    // /31 and /32 prefixes as having no usable host (returns None, never the
+    // network/broadcast address).
+    #[test]
+    fn slash31_has_no_usable_host() {
+        let a = Allocator::new(net("10.0.0.0/31"), None);
+        assert_eq!(a.next_ip(&HashSet::new(), None), None);
+    }
+
+    #[test]
+    fn slash32_has_no_usable_host() {
+        let a = Allocator::new(net("10.0.0.0/32"), None);
+        assert_eq!(a.next_ip(&HashSet::new(), None), None);
+    }
+
+    // Last usable host in a /24 (.254) is allocatable — guards against the
+    // broadcast address (.255) being mistakenly treated as a usable host.
+    #[test]
+    fn last_usable_host_is_allocatable() {
+        let a = Allocator::new(net("10.244.1.0/24"), None);
+        let mut leased: HashSet<Ipv4Addr> = HashSet::new();
+        for o in 2..=253 {
+            leased.insert(ip(&format!("10.244.1.{o}")));
+        }
+        assert_eq!(a.next_ip(&leased, None), Some(ip("10.244.1.254")));
+    }
 }
