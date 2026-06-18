@@ -12,7 +12,11 @@ use crate::netlink::Netlink;
 use crate::peer::{reconcile, Action};
 use crate::subnet::{vxlan_mtu, SubnetEnv};
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use ipnetwork::Ipv4Network;
+use k8s_openapi::api::core::v1::Node;
+use kube::runtime::{reflector, watcher, WatchStreamExt};
+use kube::Api;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -133,6 +137,53 @@ fn wants_version<I: IntoIterator<Item = String>>(args: I) -> bool {
     args.into_iter().any(|a| a == "--version" || a == "-V")
 }
 
+/// Reconcile installed VXLAN peers against the current node Store: build the
+/// desired peer set, diff it against `installed`, and apply add/remove via
+/// netlink. A failed add is left out of `installed` so it is retried on the next
+/// watch event or resync tick.
+async fn reconcile_from_store(
+    store: &reflector::Store<Node>,
+    self_name: &str,
+    nl: &Netlink,
+    dev_idx: u32,
+    installed: &mut HashMap<String, crate::peer::Peer>,
+) {
+    let nodes: Vec<Node> = store.state().iter().map(|a| (**a).clone()).collect();
+    let desired = crate::kube_mgr::desired_from_nodes(&nodes, self_name);
+    let mut next = installed.clone();
+    for action in reconcile(installed, &desired) {
+        match action {
+            Action::Add(p) => {
+                let r1 = nl.add_route(dev_idx, &p).await;
+                let r2 = nl.add_peer_l2(dev_idx, &p).await;
+                match (r1, r2) {
+                    (Ok(()), Ok(())) => {
+                        info!(node = %p.node, cidr = %p.pod_cidr, "peer added");
+                        next.insert(p.node.clone(), p);
+                    }
+                    (a, b) => {
+                        if let Err(e) = a {
+                            warn!(?e, node = %p.node, "add_route failed; will retry");
+                        }
+                        if let Err(e) = b {
+                            warn!(?e, node = %p.node, "add_peer_l2 failed; will retry");
+                        }
+                        next.remove(&p.node);
+                    }
+                }
+            }
+            Action::Remove(p) => {
+                if let Err(e) = nl.del_peer(dev_idx, &p).await {
+                    warn!(?e, node = %p.node, "del_peer");
+                }
+                next.remove(&p.node);
+                info!(node = %p.node, "peer removed");
+            }
+        }
+    }
+    *installed = next;
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Handle --version before anything else: lets `docker run <image> --version`
@@ -184,51 +235,47 @@ async fn main() -> Result<()> {
     }
 
     let mut installed: HashMap<String, crate::peer::Peer> = HashMap::new();
+
+    // Watch nodes via a reflector-backed store so peer changes reconcile
+    // near-instantly; the watcher relists on desync with its own backoff.
+    let api: Api<Node> = Api::all(mgr.client());
+    let (store, writer) = reflector::store::<Node>();
+    // default_backoff: on a watch error (e.g. transient apiserver hiccup) back off
+    // per client-go conventions instead of hot-looping the select! arm.
+    let mut stream = reflector(
+        writer,
+        watcher(api, watcher::Config::default()).default_backoff(),
+    )
+    .boxed();
+
+    // Safety-net peer resync (also retries failed netlink ops) and ip-masq
+    // re-assertion run on independent timers. interval() fires immediately on the
+    // first tick, giving an initial reconcile + masq ensure right away.
+    let mut peer_resync = tokio::time::interval(Duration::from_secs(60));
+    let mut masq_tick = tokio::time::interval(Duration::from_secs(10));
+
+    // Exactly one branch runs to completion per iteration, so reconciles never
+    // overlap (no shared-state hazard across the netlink awaits).
     loop {
-        match mgr.desired_peers().await {
-            Ok(desired) => {
-                let mut next = installed.clone();
-                for action in reconcile(&installed, &desired) {
-                    match action {
-                        Action::Add(p) => {
-                            let r1 = nl.add_route(dev_idx, &p).await;
-                            let r2 = nl.add_peer_l2(dev_idx, &p).await;
-                            match (r1, r2) {
-                                (Ok(()), Ok(())) => {
-                                    info!(node = %p.node, cidr = %p.pod_cidr, "peer added");
-                                    next.insert(p.node.clone(), p);
-                                }
-                                (a, b) => {
-                                    if let Err(e) = a {
-                                        warn!(?e, node = %p.node, "add_route failed; will retry");
-                                    }
-                                    if let Err(e) = b {
-                                        warn!(?e, node = %p.node, "add_peer_l2 failed; will retry");
-                                    }
-                                    next.remove(&p.node); // ensure it's re-attempted next tick
-                                }
-                            }
-                        }
-                        Action::Remove(p) => {
-                            if let Err(e) = nl.del_peer(dev_idx, &p).await {
-                                warn!(?e, node = %p.node, "del_peer");
-                            }
-                            next.remove(&p.node);
-                            info!(node = %p.node, "peer removed");
-                        }
+        tokio::select! {
+            ev = stream.next() => match ev {
+                Some(Ok(_)) => {
+                    reconcile_from_store(&store, &node_name, &nl, dev_idx, &mut installed).await;
+                }
+                Some(Err(e)) => warn!(?e, "node watch error; watcher will resync"),
+                None => return Err(anyhow::anyhow!("node watch stream ended unexpectedly")),
+            },
+            _ = peer_resync.tick() => {
+                reconcile_from_store(&store, &node_name, &nl, dev_idx, &mut installed).await;
+            }
+            _ = masq_tick.tick() => {
+                if let Some(m) = &masq {
+                    if let Err(e) = m.ensure(&network, &subnet) {
+                        warn!(?e, "failed to re-assert ip-masq rules; will retry");
                     }
                 }
-                installed = next;
-            }
-            Err(e) => warn!(?e, "list peers failed; will retry"),
-        }
-        // Re-assert ip-masq rules each tick (idempotent: -C then -A only on miss).
-        if let Some(m) = &masq {
-            if let Err(e) = m.ensure(&network, &subnet) {
-                warn!(?e, "failed to re-assert ip-masq rules; will retry");
             }
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
