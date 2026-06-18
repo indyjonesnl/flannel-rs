@@ -58,18 +58,7 @@ impl KubeMgr {
             .list(&Default::default())
             .await
             .context("list nodes")?;
-        let mut out = HashMap::new();
-        for n in list {
-            let name = n.metadata.name.clone().unwrap_or_default();
-            if name == self.node_name {
-                continue;
-            }
-            let Some(peer) = node_to_peer(&n) else {
-                continue;
-            };
-            out.insert(name, peer);
-        }
-        Ok(out)
+        Ok(desired_from_nodes(&list.items, &self.node_name))
     }
 }
 
@@ -116,6 +105,22 @@ fn build_publish_patch(public_ip: &str, vtep_mac: &str) -> Value {
         "kind": "Node",
         "metadata": { "annotations": Value::Object(annotations) }
     })
+}
+
+/// Build the desired peer map (node name -> Peer) from a set of Node objects,
+/// excluding `self_name` and any node lacking complete lease data.
+pub fn desired_from_nodes(nodes: &[Node], self_name: &str) -> HashMap<String, Peer> {
+    let mut out = HashMap::new();
+    for n in nodes {
+        let name = n.metadata.name.clone().unwrap_or_default();
+        if name == self_name {
+            continue;
+        }
+        if let Some(peer) = node_to_peer(n) {
+            out.insert(name, peer);
+        }
+    }
+    out
 }
 
 fn node_to_peer(n: &Node) -> Option<Peer> {
@@ -315,5 +320,28 @@ mod tests {
         let mut n = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
         n.metadata.name = None;
         assert!(node_to_peer(&n).is_none());
+    }
+
+    #[test]
+    fn desired_from_nodes_includes_peers_excludes_self_and_incomplete() {
+        let self_node =
+            node_with_annotations("self", Some("10.244.0.0/24"), complete_annotations());
+        let peer = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
+        let incomplete = node_with_annotations("n3", Some("10.244.3.0/24"), vec![]);
+        let nodes = vec![self_node, peer, incomplete];
+        let desired = desired_from_nodes(&nodes, "self");
+        assert_eq!(desired.len(), 1);
+        assert!(desired.contains_key("n2"));
+        assert!(!desired.contains_key("self"));
+        assert!(!desired.contains_key("n3"));
+        assert_eq!(desired["n2"].pod_cidr, "10.244.2.0/24");
+        assert_eq!(desired["n2"].vtep_mac, "ae:11:22:33:44:55");
+        assert_eq!(desired["n2"].public_ip, "172.18.0.3");
+    }
+
+    #[test]
+    fn desired_from_nodes_empty_input_is_empty() {
+        let desired = desired_from_nodes(&[], "self");
+        assert!(desired.is_empty());
     }
 }
