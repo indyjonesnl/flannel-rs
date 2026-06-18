@@ -14,6 +14,7 @@ pub struct KubeMgr {
     node_name: String,
 }
 
+#[derive(Debug)]
 pub struct OwnNode {
     pub pod_cidr: String,
     pub public_ip: String,
@@ -29,22 +30,7 @@ impl KubeMgr {
     pub async fn own_node(&self) -> Result<OwnNode> {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let n = nodes.get(&self.node_name).await.context("get own node")?;
-        let pod_cidr = n
-            .spec
-            .as_ref()
-            .and_then(|s| s.pod_cidr.clone())
-            .context("node has no PodCIDR")?;
-        let public_ip = n
-            .status
-            .as_ref()
-            .and_then(|s| s.addresses.as_ref())
-            .and_then(|a| a.iter().find(|x| x.type_ == "InternalIP"))
-            .map(|x| x.address.clone())
-            .context("node has no InternalIP")?;
-        Ok(OwnNode {
-            pod_cidr,
-            public_ip,
-        })
+        extract_own_node(&n)
     }
 
     /// Server-side-apply patch own Node annotations: backend-type=vxlan,
@@ -85,6 +71,27 @@ impl KubeMgr {
         }
         Ok(out)
     }
+}
+
+/// Extract this node's lease inputs from its Node object: the PodCIDR (from
+/// spec) and the InternalIP (from status addresses). Both are required.
+fn extract_own_node(n: &Node) -> Result<OwnNode> {
+    let pod_cidr = n
+        .spec
+        .as_ref()
+        .and_then(|s| s.pod_cidr.clone())
+        .context("node has no PodCIDR")?;
+    let public_ip = n
+        .status
+        .as_ref()
+        .and_then(|s| s.addresses.as_ref())
+        .and_then(|a| a.iter().find(|x| x.type_ == "InternalIP"))
+        .map(|x| x.address.clone())
+        .context("node has no InternalIP")?;
+    Ok(OwnNode {
+        pod_cidr,
+        public_ip,
+    })
 }
 
 /// Build the server-side-apply patch that publishes this node's flannel lease:
@@ -128,6 +135,7 @@ fn node_to_peer(n: &Node) -> Option<Peer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k8s_openapi::api::core::v1::{NodeAddress, NodeSpec, NodeStatus};
 
     #[test]
     fn publish_patch_sets_four_annotations_and_ssa_shape() {
@@ -158,5 +166,61 @@ mod tests {
             Some("true")
         );
         assert_eq!(ann.as_object().map(|m| m.len()), Some(4));
+    }
+
+    // Build a Node carrying only the fields extract_own_node reads.
+    fn node_with(pod_cidr: Option<&str>, addresses: Vec<(&str, &str)>) -> Node {
+        Node {
+            spec: Some(NodeSpec {
+                pod_cidr: pod_cidr.map(String::from),
+                ..Default::default()
+            }),
+            status: Some(NodeStatus {
+                addresses: Some(
+                    addresses
+                        .into_iter()
+                        .map(|(t, a)| NodeAddress {
+                            type_: t.into(),
+                            address: a.into(),
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    // parity: flannel pkg/subnet/kube — own lease = spec.podCIDR + status InternalIP.
+    #[test]
+    fn extract_own_node_reads_podcidr_and_internal_ip() {
+        let n = node_with(Some("10.244.1.0/24"), vec![("InternalIP", "172.18.0.2")]);
+        let own = extract_own_node(&n).unwrap();
+        assert_eq!(own.pod_cidr, "10.244.1.0/24");
+        assert_eq!(own.public_ip, "172.18.0.2");
+    }
+
+    #[test]
+    fn extract_own_node_errors_without_podcidr() {
+        let n = node_with(None, vec![("InternalIP", "172.18.0.2")]);
+        let err = extract_own_node(&n).unwrap_err().to_string();
+        assert!(err.contains("PodCIDR"), "got {err}");
+    }
+
+    #[test]
+    fn extract_own_node_errors_without_internal_ip() {
+        let n = node_with(Some("10.244.1.0/24"), vec![("ExternalIP", "1.2.3.4")]);
+        let err = extract_own_node(&n).unwrap_err().to_string();
+        assert!(err.contains("InternalIP"), "got {err}");
+    }
+
+    #[test]
+    fn extract_own_node_prefers_internal_over_external_ip() {
+        let n = node_with(
+            Some("10.244.1.0/24"),
+            vec![("ExternalIP", "1.2.3.4"), ("InternalIP", "172.18.0.2")],
+        );
+        let own = extract_own_node(&n).unwrap();
+        assert_eq!(own.public_ip, "172.18.0.2");
     }
 }
