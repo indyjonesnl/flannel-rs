@@ -133,16 +133,18 @@ Release, and pushes the multi-arch image to GHCR. `workflow_dispatch` with
 
 ## Roadmap
 
-Done: VXLAN backend · kube-subnet-manager · ip-masq · real MTU · bootstrap backoff ·
-minimal RBAC · **all four CNI plugins in Rust** · smoke parity · sig-network conformance ·
-sig-node conformance ·
+Done: VXLAN backend · **`host-gw` backend** · kube-subnet-manager · ip-masq · real MTU ·
+bootstrap backoff · minimal RBAC · **all four CNI plugins in Rust** · smoke parity ·
+sig-network conformance · sig-node conformance · watch-based peer updates ·
 multi-arch image + binary releases.
+
+> **Backends:** `vxlan` (default, overlay) and `host-gw` (direct routing, no overlay —
+> requires all nodes on one L2 subnet). Select via `net-conf.json` `Backend.Type`.
 
 Next / not yet:
 
 - IPv6 / dual-stack ([#5](https://github.com/indyjonesnl/flannel-rs/issues/5)),
-- additional backends (`host-gw`, `wireguard`),
-- watch-based peer updates (currently a 10s poll),
+- additional backends (`wireguard`),
 - bridge: emit a full `Result` with `interfaces`; hairpin via sysfs,
 - NetworkPolicy; image/SBOM signing (cosign).
 

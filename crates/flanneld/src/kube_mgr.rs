@@ -7,6 +7,7 @@ use kube::{Api, Client};
 use serde_json::{json, Map, Value};
 
 use crate::annotation::{self, BackendData};
+use crate::config::BackendType;
 use crate::peer::Peer;
 
 pub struct KubeMgr {
@@ -33,11 +34,16 @@ impl KubeMgr {
         extract_own_node(&n)
     }
 
-    /// Server-side-apply patch own Node annotations: backend-type=vxlan,
-    /// backend-data={"VtepMAC":mac}, public-ip, kube-subnet-manager-managed=true.
-    pub async fn publish(&self, public_ip: &str, vtep_mac: &str) -> Result<()> {
+    /// Server-side-apply patch own Node annotations: backend-type, public-ip,
+    /// kube-subnet-manager-managed, and (vxlan only) backend-data={"VtepMAC":mac}.
+    pub async fn publish(
+        &self,
+        backend: BackendType,
+        public_ip: &str,
+        vtep_mac: Option<&str>,
+    ) -> Result<()> {
         let nodes: Api<Node> = Api::all(self.client.clone());
-        let patch = build_publish_patch(public_ip, vtep_mac);
+        let patch = build_publish_patch(backend, public_ip, vtep_mac);
         nodes
             .patch(
                 &self.node_name,
@@ -77,16 +83,23 @@ fn extract_own_node(n: &Node) -> Result<OwnNode> {
 }
 
 /// Build the server-side-apply patch that publishes this node's flannel lease:
-/// the four `flannel.alpha.coreos.com/*` annotations under a minimal Node object.
-fn build_publish_patch(public_ip: &str, vtep_mac: &str) -> Value {
-    let backend_data = BackendData {
-        vtep_mac: vtep_mac.into(),
-    }
-    .to_json();
+/// the `flannel.alpha.coreos.com/*` annotations under a minimal Node object.
+/// vxlan also publishes `backend-data` (the VtepMAC); host-gw does not.
+fn build_publish_patch(backend: BackendType, public_ip: &str, vtep_mac: Option<&str>) -> Value {
+    let backend_type = match backend {
+        BackendType::Vxlan => "vxlan",
+        BackendType::HostGw => "host-gw",
+    };
 
     let mut annotations = Map::new();
-    annotations.insert(annotation::key("backend-type"), Value::from("vxlan"));
-    annotations.insert(annotation::key("backend-data"), Value::from(backend_data));
+    annotations.insert(annotation::key("backend-type"), Value::from(backend_type));
+    if let Some(mac) = vtep_mac {
+        let backend_data = BackendData {
+            vtep_mac: mac.into(),
+        }
+        .to_json();
+        annotations.insert(annotation::key("backend-data"), Value::from(backend_data));
+    }
     annotations.insert(annotation::key("public-ip"), Value::from(public_ip));
     annotations.insert(
         annotation::key("kube-subnet-manager-managed"),
@@ -101,27 +114,39 @@ fn build_publish_patch(public_ip: &str, vtep_mac: &str) -> Value {
 }
 
 /// Build the desired peer map (node name -> Peer) from a set of Node objects,
-/// excluding `self_name` and any node lacking complete lease data.
-pub fn desired_from_nodes(nodes: &[Node], self_name: &str) -> HashMap<String, Peer> {
+/// excluding `self_name` and any node lacking complete lease data for `backend`.
+pub fn desired_from_nodes(
+    nodes: &[Node],
+    self_name: &str,
+    backend: BackendType,
+) -> HashMap<String, Peer> {
     let mut out = HashMap::new();
     for n in nodes {
         let name = n.metadata.name.clone().unwrap_or_default();
         if name == self_name {
             continue;
         }
-        if let Some(peer) = node_to_peer(n) {
+        if let Some(peer) = node_to_peer(n, backend) {
             out.insert(name, peer);
         }
     }
     out
 }
 
-fn node_to_peer(n: &Node) -> Option<Peer> {
+/// Decode a Node into a peer lease. All backends require public-ip + podCIDR +
+/// name. vxlan additionally requires a valid `backend-data` VtepMAC (the node is
+/// skipped without it); host-gw needs no VtepMAC, so `vtep_mac` is `None`.
+fn node_to_peer(n: &Node, backend: BackendType) -> Option<Peer> {
     let ann = n.metadata.annotations.as_ref()?;
-    let bd = ann.get(&annotation::key("backend-data"))?;
-    let vtep_mac = BackendData::from_json(bd).ok()?.vtep_mac;
     let public_ip = ann.get(&annotation::key("public-ip"))?.clone();
     let pod_cidr = n.spec.as_ref()?.pod_cidr.clone()?;
+    let vtep_mac = match backend {
+        BackendType::Vxlan => {
+            let bd = ann.get(&annotation::key("backend-data"))?;
+            Some(BackendData::from_json(bd).ok()?.vtep_mac)
+        }
+        BackendType::HostGw => None,
+    };
     Some(Peer {
         node: n.metadata.name.clone()?,
         pod_cidr,
@@ -141,7 +166,7 @@ mod tests {
     fn publish_patch_sets_four_annotations_and_ssa_shape() {
         // parity: flannel pkg/subnet/kube — publishes backend-type/backend-data/
         // public-ip + kube-subnet-manager-managed via server-side apply.
-        let p = build_publish_patch("172.18.0.2", "ae:11:22:33:44:55");
+        let p = build_publish_patch(BackendType::Vxlan, "172.18.0.2", Some("ae:11:22:33:44:55"));
         assert_eq!(p["apiVersion"].as_str(), Some("v1"));
         assert_eq!(p["kind"].as_str(), Some("Node"));
         let ann = &p["metadata"]["annotations"];
@@ -166,6 +191,25 @@ mod tests {
             Some("true")
         );
         assert_eq!(ann.as_object().map(|m| m.len()), Some(4));
+    }
+
+    // host-gw publishes backend-type=host-gw + public-ip, and NO backend-data.
+    #[test]
+    fn publish_patch_host_gw_omits_backend_data() {
+        let p = build_publish_patch(BackendType::HostGw, "172.18.0.2", None);
+        let ann = &p["metadata"]["annotations"];
+        assert_eq!(
+            ann.get(annotation::key("backend-type").as_str())
+                .and_then(|v| v.as_str()),
+            Some("host-gw")
+        );
+        assert_eq!(
+            ann.get(annotation::key("public-ip").as_str())
+                .and_then(|v| v.as_str()),
+            Some("172.18.0.2")
+        );
+        assert!(ann.get(annotation::key("backend-data").as_str()).is_none());
+        assert_eq!(ann.as_object().map(|m| m.len()), Some(3));
     }
 
     // Build a Node carrying only the fields extract_own_node reads.
@@ -261,18 +305,36 @@ mod tests {
     #[test]
     fn node_to_peer_complete_node_yields_peer() {
         let n = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
-        let p = node_to_peer(&n).expect("peer");
+        let p = node_to_peer(&n, BackendType::Vxlan).expect("peer");
         assert_eq!(p.node, "n2");
         assert_eq!(p.pod_cidr, "10.244.2.0/24");
         assert_eq!(p.public_ip, "172.18.0.3");
-        assert_eq!(p.vtep_mac, "ae:11:22:33:44:55");
+        assert_eq!(p.vtep_mac.as_deref(), Some("ae:11:22:33:44:55"));
+    }
+
+    // host-gw decodes a peer from public-ip + podCIDR with NO backend-data; vtep_mac is None.
+    #[test]
+    fn node_to_peer_host_gw_decodes_without_vtep_mac() {
+        let ann = vec![(annotation::key("public-ip"), "172.18.0.3".to_string())];
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
+        let p = node_to_peer(&n, BackendType::HostGw).expect("peer");
+        assert_eq!(p.node, "n2");
+        assert_eq!(p.pod_cidr, "10.244.2.0/24");
+        assert_eq!(p.public_ip, "172.18.0.3");
+        assert_eq!(p.vtep_mac, None);
+    }
+
+    #[test]
+    fn node_to_peer_host_gw_skips_missing_public_ip() {
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), vec![]);
+        assert!(node_to_peer(&n, BackendType::HostGw).is_none());
     }
 
     #[test]
     fn node_to_peer_missing_backend_data_is_skipped() {
         let ann = vec![(annotation::key("public-ip"), "172.18.0.3".to_string())];
         let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
-        assert!(node_to_peer(&n).is_none());
+        assert!(node_to_peer(&n, BackendType::Vxlan).is_none());
     }
 
     #[test]
@@ -282,19 +344,19 @@ mod tests {
             r#"{"VtepMAC":"aa:bb"}"#.to_string(),
         )];
         let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
-        assert!(node_to_peer(&n).is_none());
+        assert!(node_to_peer(&n, BackendType::Vxlan).is_none());
     }
 
     #[test]
     fn node_to_peer_missing_podcidr_is_skipped() {
         let n = node_with_annotations("n2", None, complete_annotations());
-        assert!(node_to_peer(&n).is_none());
+        assert!(node_to_peer(&n, BackendType::Vxlan).is_none());
     }
 
     #[test]
     fn node_to_peer_no_annotations_is_skipped() {
         let n = node_with_annotations("n2", Some("10.244.2.0/24"), vec![]);
-        assert!(node_to_peer(&n).is_none());
+        assert!(node_to_peer(&n, BackendType::Vxlan).is_none());
     }
 
     #[test]
@@ -304,7 +366,7 @@ mod tests {
             (annotation::key("public-ip"), "172.18.0.3".to_string()),
         ];
         let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
-        assert!(node_to_peer(&n).is_none());
+        assert!(node_to_peer(&n, BackendType::Vxlan).is_none());
     }
 
     #[test]
@@ -312,7 +374,7 @@ mod tests {
         // Complete lease data but no metadata.name yields no peer.
         let mut n = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
         n.metadata.name = None;
-        assert!(node_to_peer(&n).is_none());
+        assert!(node_to_peer(&n, BackendType::Vxlan).is_none());
     }
 
     #[test]
@@ -322,19 +384,19 @@ mod tests {
         let peer = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
         let incomplete = node_with_annotations("n3", Some("10.244.3.0/24"), vec![]);
         let nodes = vec![self_node, peer, incomplete];
-        let desired = desired_from_nodes(&nodes, "self");
+        let desired = desired_from_nodes(&nodes, "self", BackendType::Vxlan);
         assert_eq!(desired.len(), 1);
         assert!(desired.contains_key("n2"));
         assert!(!desired.contains_key("self"));
         assert!(!desired.contains_key("n3"));
         assert_eq!(desired["n2"].pod_cidr, "10.244.2.0/24");
-        assert_eq!(desired["n2"].vtep_mac, "ae:11:22:33:44:55");
+        assert_eq!(desired["n2"].vtep_mac.as_deref(), Some("ae:11:22:33:44:55"));
         assert_eq!(desired["n2"].public_ip, "172.18.0.3");
     }
 
     #[test]
     fn desired_from_nodes_empty_input_is_empty() {
-        let desired = desired_from_nodes(&[], "self");
+        let desired = desired_from_nodes(&[], "self", BackendType::Vxlan);
         assert!(desired.is_empty());
     }
 }

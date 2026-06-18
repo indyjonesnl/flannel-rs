@@ -35,10 +35,19 @@ CLI_NODE=$(k get pod "$CLI_POD" -o jsonpath='{.spec.nodeName}')
 echo "server=$SRV_POD@$SRV_NODE ip=$SRV_IP  client=$CLI_POD@$CLI_NODE"
 [ "$SRV_NODE" != "$CLI_NODE" ] || { echo "FAIL: pods co-located"; exit 1; }
 
-echo "== assert 1: pod IP in node PodCIDR + flannel.1 + routes =="
+# Backend selected by the harness (vxlan default; host-gw has no overlay device).
+BACKEND="${BACKEND:-vxlan}"
+echo "== assert 1: pod IP in node PodCIDR + device + routes (backend=$BACKEND) =="
 for node in $(k get nodes -o jsonpath='{.items[*].metadata.name}'); do
-  docker exec "$node" ip -d link show flannel.1 >/dev/null \
-    || { echo "FAIL: flannel.1 missing on $node"; exit 1; }
+  if [ "$BACKEND" = "host-gw" ]; then
+    # host-gw routes directly, with no overlay device.
+    if docker exec "$node" ip -d link show flannel.1 >/dev/null 2>&1; then
+      echo "FAIL: flannel.1 unexpectedly present on $node (host-gw uses no overlay)"; exit 1
+    fi
+  else
+    docker exec "$node" ip -d link show flannel.1 >/dev/null \
+      || { echo "FAIL: flannel.1 missing on $node"; exit 1; }
+  fi
 done
 SRV_CIDR=$(k get node "$SRV_NODE" -o jsonpath='{.spec.podCIDR}')
 python3 - "$SRV_IP" "$SRV_CIDR" <<'PY'

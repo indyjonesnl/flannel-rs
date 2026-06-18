@@ -52,19 +52,28 @@ ensure_bridge_netfilter() {
 
 # Stand up the kind cluster with the requested flannel variant fully rolled out
 # and all nodes Ready. Resolves $MANIFEST as a side effect.
-#   cluster_up <flannel-go|flannel-rs>
+#   cluster_up <flannel-go|flannel-rs|flannel-rs-hostgw>
 cluster_up() {
   local variant="${1:?cluster_up: variant required}"
   case "$variant" in
     flannel-go) MANIFEST="$ROOT/deploy/flannel-go.yaml" ;;
     flannel-rs) MANIFEST="$ROOT/deploy/flannel-rs.yaml" ;;
+    flannel-rs-hostgw)
+      # Same image + manifest as flannel-rs, but with net-conf.json's backend
+      # switched to host-gw so the daemon boots host-gw from the start.
+      MANIFEST="$(mktemp --suffix=-flannel-rs-hostgw.yaml)"
+      sed 's/"Type": "vxlan"/"Type": "host-gw"/' "$ROOT/deploy/flannel-rs.yaml" > "$MANIFEST"
+      ;;
     *) echo "unknown variant $variant"; exit 2 ;;
   esac
 
   kind create cluster --config "$ROOT/deploy/kind-cluster.yaml"
   install_cni_bridge
   ensure_bridge_netfilter
-  [ "$variant" = "flannel-rs" ] && kind load docker-image flannel-rs:dev --name "$CLUSTER_NAME"
+  case "$variant" in
+    flannel-rs | flannel-rs-hostgw)
+      kind load docker-image flannel-rs:dev --name "$CLUSTER_NAME" ;;
+  esac
   kubectl --context "$CTX" apply -f "$MANIFEST"
   kubectl --context "$CTX" -n kube-flannel rollout status ds/kube-flannel-ds --timeout=180s
   kubectl --context "$CTX" wait --for=condition=Ready nodes --all --timeout=180s

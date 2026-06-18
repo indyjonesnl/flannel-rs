@@ -47,15 +47,14 @@ impl Netlink {
         Ok((mac, idx))
     }
 
-    /// MTU of the interface that has `ip` assigned. Used to size the overlay.
-    pub async fn link_mtu_by_ip(&self, ip: Ipv4Addr) -> Result<u32> {
+    /// Index of the interface that has `ip` assigned (the host's external NIC).
+    /// Used as the output interface for host-gw routes.
+    pub async fn link_index_by_ip(&self, ip: Ipv4Addr) -> Result<u32> {
         use netlink_packet_route::address::AddressAttribute;
-        use netlink_packet_route::link::LinkAttribute;
         use netlink_packet_route::AddressFamily;
         use std::net::IpAddr;
 
         let mut addrs = self.handle.address().get().execute();
-        let mut idx: Option<u32> = None;
         while let Some(msg) = addrs.try_next().await? {
             if msg.header.family != AddressFamily::Inet {
                 continue;
@@ -65,12 +64,17 @@ impl Netlink {
                 .iter()
                 .any(|attr| matches!(attr, AddressAttribute::Address(IpAddr::V4(a)) if *a == ip));
             if matches {
-                idx = Some(msg.header.index);
-                break;
+                return Ok(msg.header.index);
             }
         }
-        let idx = idx.with_context(|| format!("no interface owns address {ip}"))?;
+        anyhow::bail!("no interface owns address {ip}")
+    }
 
+    /// MTU of the interface that has `ip` assigned. Used to size the overlay.
+    pub async fn link_mtu_by_ip(&self, ip: Ipv4Addr) -> Result<u32> {
+        use netlink_packet_route::link::LinkAttribute;
+
+        let idx = self.link_index_by_ip(ip).await?;
         let mut links = self.handle.link().get().match_index(idx).execute();
         let link = links
             .try_next()
@@ -189,10 +193,64 @@ impl Netlink {
         Ok(())
     }
 
+    /// host-gw: route the peer's pod CIDR via the peer's node IP on the host NIC
+    /// (`oif`). No encapsulation, no onlink — peers are directly L2-reachable, so
+    /// the kernel ARPs for the node IP normally. Idempotent (tolerates EEXIST).
+    pub async fn add_host_gw_route(&self, oif: u32, peer: &Peer) -> Result<()> {
+        let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
+        let gw: Ipv4Addr = peer.public_ip.parse().context("parse peer node IP")?;
+        let r = self
+            .handle
+            .route()
+            .add()
+            .v4()
+            .destination_prefix(net.network(), net.prefix())
+            .output_interface(oif)
+            .gateway(gw);
+        if let Err(rtnetlink::Error::NetlinkError(e)) = r.execute().await {
+            if e.raw_code() != -17 {
+                anyhow::bail!("add host-gw route: {e:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// host-gw: remove the route to the peer's pod CIDR on `oif`. Matches the
+    /// destination prefix AND output interface so a same-prefix route on another
+    /// device is never deleted by mistake. Best-effort.
+    pub async fn del_host_gw_route(&self, oif: u32, peer: &Peer) -> Result<()> {
+        use netlink_packet_route::route::{RouteAddress, RouteAttribute};
+
+        let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
+        let dst = net.network();
+        let mut routes = self.handle.route().get(rtnetlink::IpVersion::V4).execute();
+        while let Some(route) = routes.try_next().await? {
+            if route.header.destination_prefix_length != net.prefix() {
+                continue;
+            }
+            let matches_dest = route.attributes.iter().any(|attr| {
+                matches!(attr, RouteAttribute::Destination(RouteAddress::Inet(addr)) if *addr == dst)
+            });
+            let matches_dev = route
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, RouteAttribute::Oif(o) if *o == oif));
+            if matches_dest && matches_dev {
+                let _ = self.handle.route().del(route).execute().await;
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn add_peer_l2(&self, dev: u32, peer: &Peer) -> Result<()> {
         use netlink_packet_route::neighbour::NeighbourFlag;
 
-        let mac = parse_mac(&peer.vtep_mac)?;
+        let mac = parse_mac(
+            peer.vtep_mac
+                .as_deref()
+                .context("vxlan peer missing VtepMAC")?,
+        )?;
         let cidr: Ipv4Network = peer.pod_cidr.parse()?;
         let vtep_ip = cidr.network();
         let public: Ipv4Addr = peer.public_ip.parse()?;
@@ -230,7 +288,11 @@ impl Netlink {
 
         let net: Ipv4Network = peer.pod_cidr.parse().context("parse peer cidr")?;
         let vtep_ip = net.network(); // x.x.x.0
-        let mac = parse_mac(&peer.vtep_mac)?;
+        let mac = parse_mac(
+            peer.vtep_mac
+                .as_deref()
+                .context("vxlan peer missing VtepMAC")?,
+        )?;
 
         // Remove route to peer CIDR via dev. Match both the destination prefix
         // AND the output interface, so a same-prefix route on another device is

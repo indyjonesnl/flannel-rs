@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [flannel-go, flannel-rs]
+        variant: [flannel-go, flannel-rs, flannel-rs-hostgw]
     steps:
       - uses: actions/checkout@v5
 
@@ -73,7 +73,7 @@ jobs:
           sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
 
       - name: Build flannel-rs image
-        if: matrix.variant == 'flannel-rs'
+        if: startsWith(matrix.variant, 'flannel-rs')
         run: docker build -t flannel-rs:dev .
 
       - name: Run smoke (${{ matrix.variant }})
@@ -218,3 +218,6 @@ jobs:
 
       - name: Run reconcile scenario (flannel-rs)
         run: bash tests/smoke/reconcile.sh flannel-rs
+
+      - name: Run reconcile scenario (flannel-rs-hostgw)
+        run: bash tests/smoke/reconcile.sh flannel-rs-hostgw

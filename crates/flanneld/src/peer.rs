@@ -4,9 +4,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     pub node: String,
-    pub pod_cidr: String,  // 10.244.2.0/24
-    pub public_ip: String, // underlay node IP
-    pub vtep_mac: String,  // flannel.1 MAC on the peer
+    pub pod_cidr: String,         // 10.244.2.0/24
+    pub public_ip: String,        // underlay node IP
+    pub vtep_mac: Option<String>, // flannel.1 MAC on the peer (vxlan only; None for host-gw)
 }
 
 #[derive(Debug, PartialEq)]
@@ -49,7 +49,7 @@ mod tests {
             node: node.into(),
             pod_cidr: "10.244.2.0/24".into(),
             public_ip: "172.18.0.3".into(),
-            vtep_mac: mac.into(),
+            vtep_mac: Some(mac.into()),
         }
     }
 
@@ -87,6 +87,25 @@ mod tests {
                 Action::Remove(peer("n2", "aa:bb")),
                 Action::Add(peer("n2", "cc:dd"))
             ]
+        );
+    }
+
+    // parity: upstream host-gw route_network_test.go TestRouteCache — a peer whose
+    // node IP (gateway) changes yields Remove(old)+Add(new), so the host-gw route
+    // is replaced, never duplicated.
+    #[test]
+    fn replaces_on_public_ip_change() {
+        let mut old = peer("n2", "aa:bb");
+        old.public_ip = "172.18.0.3".into();
+        let mut new = peer("n2", "aa:bb");
+        new.public_ip = "172.18.0.9".into();
+        let mut installed = HashMap::new();
+        installed.insert("n2".into(), old.clone());
+        let mut desired = HashMap::new();
+        desired.insert("n2".into(), new.clone());
+        assert_eq!(
+            reconcile(&installed, &desired),
+            vec![Action::Remove(old), Action::Add(new)]
         );
     }
 
