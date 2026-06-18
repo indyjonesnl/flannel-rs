@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn classify_rejects_non_vxlan_backend() {
-        let raw = r#"{"Network":"x","Backend":{"Type":"host-gw"}}"#;
+        let raw = r#"{"Network":"10.244.0.0/16","Backend":{"Type":"host-gw"}}"#;
         let err = classify_net_conf(raw).unwrap_err();
         match err {
             Fatal::Backend(kind) => assert_eq!(kind, "host-gw"),
