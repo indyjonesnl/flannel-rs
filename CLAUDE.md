@@ -1,5 +1,4 @@
 <!-- SPECKIT START -->
-Active feature plan: `specs/001-host-gw-backend/plan.md`
-(host-gw backend — direct routing, no overlay. See also research.md, data-model.md,
-contracts/, quickstart.md in that directory.)
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
 <!-- SPECKIT END -->
