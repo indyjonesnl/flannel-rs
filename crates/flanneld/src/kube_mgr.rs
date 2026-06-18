@@ -136,6 +136,8 @@ fn node_to_peer(n: &Node) -> Option<Peer> {
 mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::{NodeAddress, NodeSpec, NodeStatus};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::collections::BTreeMap;
 
     #[test]
     fn publish_patch_sets_four_annotations_and_ssa_shape() {
@@ -222,5 +224,96 @@ mod tests {
         );
         let own = extract_own_node(&n).unwrap();
         assert_eq!(own.public_ip, "172.18.0.2");
+    }
+
+    // Build a Node with a name, optional podCIDR, and annotation key/value pairs.
+    fn node_with_annotations(
+        name: &str,
+        pod_cidr: Option<&str>,
+        annotations: Vec<(String, String)>,
+    ) -> Node {
+        let ann: BTreeMap<String, String> = annotations.into_iter().collect();
+        Node {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                annotations: if ann.is_empty() { None } else { Some(ann) },
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                pod_cidr: pod_cidr.map(String::from),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    // Only the two annotations node_to_peer reads (backend-data + public-ip).
+    fn complete_annotations() -> Vec<(String, String)> {
+        vec![
+            (
+                annotation::key("backend-data"),
+                r#"{"VtepMAC":"ae:11:22:33:44:55"}"#.to_string(),
+            ),
+            (annotation::key("public-ip"), "172.18.0.3".to_string()),
+        ]
+    }
+
+    // parity: flannel pkg/subnet/kube — a node with complete annotations + podCIDR
+    // decodes to a lease (Peer); any missing/garbled piece yields no lease.
+    #[test]
+    fn node_to_peer_complete_node_yields_peer() {
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
+        let p = node_to_peer(&n).expect("peer");
+        assert_eq!(p.node, "n2");
+        assert_eq!(p.pod_cidr, "10.244.2.0/24");
+        assert_eq!(p.public_ip, "172.18.0.3");
+        assert_eq!(p.vtep_mac, "ae:11:22:33:44:55");
+    }
+
+    #[test]
+    fn node_to_peer_missing_backend_data_is_skipped() {
+        let ann = vec![(annotation::key("public-ip"), "172.18.0.3".to_string())];
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
+        assert!(node_to_peer(&n).is_none());
+    }
+
+    #[test]
+    fn node_to_peer_missing_public_ip_is_skipped() {
+        let ann = vec![(
+            annotation::key("backend-data"),
+            r#"{"VtepMAC":"aa:bb"}"#.to_string(),
+        )];
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
+        assert!(node_to_peer(&n).is_none());
+    }
+
+    #[test]
+    fn node_to_peer_missing_podcidr_is_skipped() {
+        let n = node_with_annotations("n2", None, complete_annotations());
+        assert!(node_to_peer(&n).is_none());
+    }
+
+    #[test]
+    fn node_to_peer_no_annotations_is_skipped() {
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), vec![]);
+        assert!(node_to_peer(&n).is_none());
+    }
+
+    #[test]
+    fn node_to_peer_malformed_backend_data_is_skipped() {
+        let ann = vec![
+            (annotation::key("backend-data"), "not json".to_string()),
+            (annotation::key("public-ip"), "172.18.0.3".to_string()),
+        ];
+        let n = node_with_annotations("n2", Some("10.244.2.0/24"), ann);
+        assert!(node_to_peer(&n).is_none());
+    }
+
+    #[test]
+    fn node_to_peer_missing_name_is_skipped() {
+        // Complete lease data but no metadata.name yields no peer.
+        let mut n = node_with_annotations("n2", Some("10.244.2.0/24"), complete_annotations());
+        n.metadata.name = None;
+        assert!(node_to_peer(&n).is_none());
     }
 }
