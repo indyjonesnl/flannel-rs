@@ -64,9 +64,12 @@ docker build -t flannel-rs:dev .
 bash tests/smoke/run.sh flannel-go            # upstream baseline (lock green first)
 bash tests/smoke/run.sh flannel-rs            # vxlan parity (all-Rust chain)
 bash tests/smoke/run.sh flannel-rs-hostgw     # host-gw (no overlay)
-bash tests/conformance/run.sh flannel-rs sig-network        # 47 specs
-bash tests/conformance/run.sh flannel-rs sig-node           # 105 specs
-bash tests/conformance/run.sh flannel-rs sig-network-extra  # MTU + ip-masq
+bash tests/conformance/run.sh flannel-rs sig-network            # vxlan, 47 specs
+bash tests/conformance/run.sh flannel-rs-hostgw sig-network     # host-gw, 47 specs
+bash tests/conformance/run.sh flannel-rs sig-node               # vxlan, 105 specs
+bash tests/conformance/run.sh flannel-rs-hostgw sig-node        # host-gw, 105 specs
+bash tests/conformance/run.sh flannel-rs sig-network-extra      # vxlan MTU + ip-masq
+bash tests/conformance/run.sh flannel-rs-hostgw sig-network-extra # host-gw MTU + ip-masq
 bash tests/smoke/reconcile.sh flannel-rs                    # vxlan peer reconverge
 bash tests/smoke/reconcile.sh flannel-rs-hostgw             # host-gw route reconverge
 ```
@@ -82,8 +85,10 @@ in sync — `deploy/flannel-rs.yaml` (used by CI) and `deploy/flannel-rs-release
 ## CI jobs (`.github/workflows/ci.yml`)
 
 `fmt + clippy + test` → then (all `needs: test`): `kind smoke` matrix
-(flannel-go / flannel-rs / flannel-rs-hostgw) · `sig-network conformance` ·
-`sig-node conformance` · `sig-network extra (MTU + ip-masq)` ·
+(flannel-go / flannel-rs / flannel-rs-hostgw) · `sig-network conformance`
+matrix (flannel-rs / flannel-rs-hostgw) · `sig-node conformance`
+matrix (flannel-rs / flannel-rs-hostgw) · `sig-network extra (MTU + ip-masq)`
+matrix (flannel-rs / flannel-rs-hostgw) ·
 `flanneld reconcile` (flannel-rs + flannel-rs-hostgw). All gated on every push/PR.
 
 ## Testing conventions

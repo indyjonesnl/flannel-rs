@@ -80,10 +80,14 @@ jobs:
         run: bash tests/smoke/run.sh ${{ matrix.variant }}
 
   conformance:
-    name: sig-network conformance (flannel-rs)
+    name: sig-network conformance (${{ matrix.variant }})
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [flannel-rs, flannel-rs-hostgw]
     steps:
       - uses: actions/checkout@v5
 
@@ -114,14 +118,18 @@ jobs:
       - name: Build flannel-rs image
         run: docker build -t flannel-rs:dev .
 
-      - name: Run sig-network conformance (flannel-rs)
-        run: bash tests/conformance/run.sh flannel-rs sig-network
+      - name: Run sig-network conformance (${{ matrix.variant }})
+        run: bash tests/conformance/run.sh ${{ matrix.variant }} sig-network
 
   conformance-node:
-    name: sig-node conformance (flannel-rs)
+    name: sig-node conformance (${{ matrix.variant }})
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [flannel-rs, flannel-rs-hostgw]
     steps:
       - uses: actions/checkout@v5
 
@@ -152,14 +160,18 @@ jobs:
       - name: Build flannel-rs image
         run: docker build -t flannel-rs:dev .
 
-      - name: Run sig-node conformance (flannel-rs)
-        run: bash tests/conformance/run.sh flannel-rs sig-node
+      - name: Run sig-node conformance (${{ matrix.variant }})
+        run: bash tests/conformance/run.sh ${{ matrix.variant }} sig-node
 
   conformance-extra:
-    name: sig-network extra (MTU + ip-masq) (flannel-rs)
+    name: sig-network extra (MTU + ip-masq) (${{ matrix.variant }})
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [flannel-rs, flannel-rs-hostgw]
     steps:
       - uses: actions/checkout@v5
 
@@ -190,8 +202,8 @@ jobs:
       - name: Build flannel-rs image
         run: docker build -t flannel-rs:dev .
 
-      - name: Run sig-network extra (MTU + ip-masq) (flannel-rs)
-        run: bash tests/conformance/run.sh flannel-rs sig-network-extra
+      - name: Run sig-network extra (MTU + ip-masq) (${{ matrix.variant }})
+        run: bash tests/conformance/run.sh ${{ matrix.variant }} sig-network-extra
 
   reconcile:
     name: flanneld reconcile (flannel-rs)

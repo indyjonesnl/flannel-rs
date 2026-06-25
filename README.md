@@ -98,9 +98,10 @@ every push and PR:
   (`Feature:Networking-IPv4`/`-DNS` → exercises `flanneld`'s ip-masq MASQUERADE on pod
   egress to off-cluster destinations).
 
-CI jobs: `fmt + clippy + test` → `smoke (flannel-go)`, `smoke (flannel-rs)`,
-`sig-network conformance (flannel-rs)`, `sig-node conformance (flannel-rs)`,
-`sig-network extra (MTU + ip-masq) (flannel-rs)`.
+CI jobs: `fmt + clippy + test` → `smoke (flannel-go/flannel-rs/flannel-rs-hostgw)`,
+`sig-network conformance (flannel-rs/flannel-rs-hostgw)`,
+`sig-node conformance (flannel-rs/flannel-rs-hostgw)`,
+`sig-network extra (MTU + ip-masq) (flannel-rs/flannel-rs-hostgw)`.
 
 > Note: same-node pod→Service traffic only traverses iptables when `br_netfilter` is
 > loaded (`net.bridge.bridge-nf-call-iptables=1`). The harness ensures it on each node.
@@ -115,9 +116,13 @@ docker build -t flannel-rs:dev .          # build the dev image
 
 bash tests/smoke/run.sh flannel-go        # baseline (upstream Go flannel)
 bash tests/smoke/run.sh flannel-rs        # parity check (all-Rust chain)
-bash tests/conformance/run.sh flannel-rs sig-network        # sig-network conformance
-bash tests/conformance/run.sh flannel-rs sig-node           # sig-node conformance
-bash tests/conformance/run.sh flannel-rs sig-network-extra  # MTU + ip-masq
+bash tests/smoke/run.sh flannel-rs-hostgw # host-gw (no overlay)
+bash tests/conformance/run.sh flannel-rs sig-network            # vxlan sig-network
+bash tests/conformance/run.sh flannel-rs-hostgw sig-network     # host-gw sig-network
+bash tests/conformance/run.sh flannel-rs sig-node               # vxlan sig-node
+bash tests/conformance/run.sh flannel-rs-hostgw sig-node        # host-gw sig-node
+bash tests/conformance/run.sh flannel-rs sig-network-extra      # vxlan MTU + ip-masq
+bash tests/conformance/run.sh flannel-rs-hostgw sig-network-extra # host-gw MTU + ip-masq
 ```
 
 Each script creates a 3-node kind cluster, installs the CNI, runs its checks, and tears

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VARIANT="${1:?usage: run.sh <flannel-go|flannel-rs> [sig-network|sig-node|sig-network-extra]}"
+VARIANT="${1:?usage: run.sh <flannel-go|flannel-rs|flannel-rs-hostgw> [sig-network|sig-node|sig-network-extra]}"
 SUITE="${2:-sig-network}"
 
 # Shared kind cluster bring-up (create + CNI bridge + bridge netfilter + load
